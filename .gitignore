@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.env
+.pytest_cache/
+.streamlit/secrets.toml
+
+# Local, machine-specific FalkorDB binaries (fetched/built by scripts/setup_falkordb_local.sh)
+bin/
+
+# Generated / synthetic data artifacts (regenerate with scripts/run_pipeline.sh)
+data/raw/*.csv
+data/processed/*
+!data/processed/.gitkeep
+
+# Generated reports (regenerate on demand from the dashboard / CLI)
+reports/*.md
+reports/*.json
+reports/*.pdf
+!reports/.gitkeep
+
+# Trained model artifacts are small and useful to ship, but allow override
+*.log
+.DS_Store
