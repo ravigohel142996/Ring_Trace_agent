@@ -21,7 +21,9 @@ auditable regardless of which planner ran.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -135,8 +137,6 @@ class Investigator:
 
     # ------------------------------------------------------------------
     def _run_llm_loop(self, ctx: ToolContext, account_id: str, query: str, llm, max_iterations: Optional[int]) -> str:
-        import os
-
         max_iterations = max_iterations or int(os.getenv("LLM_MAX_TOOL_ITERATIONS", "8"))
         tools_schema = REGISTRY.openai_schemas(category="investigation")
 
@@ -161,7 +161,6 @@ class Investigator:
             for tc in tool_calls:
                 name = tc.function.name
                 try:
-                    import json
                     args = json.loads(tc.function.arguments or "{}")
                 except Exception:  # noqa: BLE001
                     args = {}
@@ -173,9 +172,8 @@ class Investigator:
                     ctx.evidence_trail.append(result.to_dict())
                     if name == "generate_verdict" and result.ok:
                         verdict_called = True
-                    import json as _json
-                    tool_result_text = _json.dumps({"ok": result.ok, "summary": result.summary,
-                                                     "data": result.data, "error": result.error}, default=str)[:6000]
+                    tool_result_text = json.dumps({"ok": result.ok, "summary": result.summary,
+                                                    "data": result.data, "error": result.error}, default=str)[:6000]
                 messages.append({"role": "tool", "tool_call_id": tc.id, "name": name, "content": tool_result_text})
 
             if verdict_called:

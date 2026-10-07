@@ -24,3 +24,6 @@ reports/*.pdf
 # Trained model artifacts are small and useful to ship, but allow override
 *.log
 .DS_Store
+
+# Redis/FalkorDB RDB snapshot dumped by the locally-built redis-server binary
+dump.rdb

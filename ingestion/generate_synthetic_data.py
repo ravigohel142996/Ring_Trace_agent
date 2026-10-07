@@ -162,14 +162,44 @@ class SyntheticDataset:
             "broker_id": broker_id or "", "merchant_id": merchant_id or "",
         })
 
+    def add_merchant_purchase(self, txn_id: str, account_id: str, merchant_id: str, amount: float,
+                               days_ago: float, hours_ago: float = 0, minutes_ago: float = 0,
+                               channel: str = "card_purchase"):
+        """A one-sided transaction: Account -> Merchant (no destination Account).
+        Loaded as Transaction-[:FROM]->Account + Transaction-[:TO_MERCHANT]->Merchant,
+        distinct from the Account-[:TRANSFERRED_TO]->Account money-flow edges used for
+        ring/leader/path analysis. This is what lets a laundering chain terminate in a
+        realistic real-world spend (Account -> Broker -> Account -> Merchant) instead of
+        every ring just ending in an abstract 'cash out' transfer."""
+        ts, iso = _ts(days_ago=days_ago, hours_ago=hours_ago, minutes_ago=minutes_ago)
+        self.transactions.append({
+            "id": txn_id, "from_account": account_id, "to_account": "", "amount": round(amount, 2),
+            "timestamp": ts, "timestamp_iso": iso, "channel": channel, "status": "COMPLETED",
+            "broker_id": "", "merchant_id": merchant_id,
+        })
+
     def add_alert(self, alert_id: str, account_id: str, reason: str, severity: str, days_ago: float = 0):
         ts, iso = _ts(days_ago=days_ago)
         self.alerts.append({"id": alert_id, "account_id": account_id, "reason": reason,
                              "severity": severity, "created_at": ts, "created_at_iso": iso, "status": "OPEN"})
 
-    def mark_ground_truth(self, account_id: str, is_fraud: bool, ring_id: str, pattern: str):
+    def mark_ground_truth(self, account_id: str, is_fraud: bool, ring_id: str, pattern: str,
+                           role: str = "member"):
+        """`role` additionally distinguishes the ring LEADER from ordinary members/feeders
+        where the generator knows it (central_mule_leader, layered_movement, and the hand
+        -crafted demo scenario). Used by evaluation/evaluate_investigation.py to score
+        leader-identification quality, separate from plain ring-membership recall."""
         self.ground_truth.append({"account_id": account_id, "is_fraud": int(is_fraud),
-                                   "ring_id": ring_id, "pattern": pattern})
+                                   "ring_id": ring_id, "pattern": pattern, "role": role})
+
+    def set_ground_truth_role(self, account_id: str, ring_id: str, role: str):
+        """Mutates the `role` of an already-recorded ground-truth row in place
+        (instead of appending a duplicate) — used to retroactively tag the
+        ring leader once the generator picks who that is."""
+        for row in self.ground_truth:
+            if row["account_id"] == account_id and row["ring_id"] == ring_id:
+                row["role"] = role
+                return
 
     # ------------------------------------------------------------------
     def to_csv(self, out_dir: Path = DATA_DIR, processed_dir: Path = PROCESSED_DIR) -> None:
@@ -202,7 +232,7 @@ class SyntheticDataset:
 
         gt_path = processed_dir / "ground_truth.csv"
         with open(gt_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["account_id", "is_fraud", "ring_id", "pattern"])
+            writer = csv.DictWriter(f, fieldnames=["account_id", "is_fraud", "ring_id", "pattern", "role"])
             writer.writeheader()
             writer.writerows(self.ground_truth)
 
@@ -258,7 +288,15 @@ def plant_demo_scenario(ds: SyntheticDataset) -> None:
     ds.link_broker("A1001", "BR-MX1")
     ds.add_transaction("T-DEMO-99", "A1001", "A1001", amount=15000.0, days_ago=1, hours_ago=2,
                         channel="broker_payout", broker_id="BR-MX1")
-    ds.mark_ground_truth("A1001", True, ring_id="RING-DEMO-1", pattern="central_mule_leader")
+    ds.mark_ground_truth("A1001", True, ring_id="RING-DEMO-1", pattern="central_mule_leader", role="leader")
+
+    # Final leg of the laundering chain: the ring leader spends part of the mixer
+    # payout at a real merchant. This completes the realistic end-to-end narrative
+    # Account -> Broker (mixer) -> Account (self, cashed out) -> Merchant (spent),
+    # which is otherwise invisible to the agent without Merchant nodes/edges.
+    ds.add_merchant("MER-LUX1", name="Meridian Luxury Goods", category="luxury_retail")
+    ds.add_merchant_purchase("T-DEMO-100", "A1001", "MER-LUX1", amount=8200.0, days_ago=1,
+                              hours_ago=1, channel="card_purchase")
 
     # The alert that kicks off the canonical demo: "Alert A1027 has been flagged"
     ds.add_alert("AL-1027", "A1027", reason="High-velocity transfer pattern detected by rules engine",
@@ -275,6 +313,11 @@ def plant_demo_scenario(ds: SyntheticDataset) -> None:
     ds.add_account("A1101", account_type="checking", status="ACTIVE", country="US", created_at=_ts(days_ago=800)[0])
     ds.add_transaction("T-CASEA-1", "A1100", "A1101", amount=42.50, days_ago=10, channel="transfer")
     ds.mark_ground_truth("A1100", False, ring_id="NONE", pattern="legit")
+    # A routine everyday merchant purchase — proves Merchant/TO_MERCHANT data is NOT
+    # fraud-exclusive. Ordinary accounts shop too; a merchant purchase alone must never
+    # be treated as a fraud signal by itself.
+    ds.add_merchant("MER-COFFEE1", name="Daily Grind Coffee Co.", category="food_and_beverage")
+    ds.add_merchant_purchase("T-CASEA-2", "A1100", "MER-COFFEE1", amount=5.75, days_ago=3, hours_ago=8)
 
     # ---- Case B: medium risk — identity-linked only, no deep money trail ----
     ds.add_broker("BR-NONE", name="N/A", broker_type="n/a", risk_level="LOW")
@@ -291,6 +334,89 @@ def plant_demo_scenario(ds: SyntheticDataset) -> None:
         ds.mark_ground_truth(acc, True, ring_id="RING-DEMO-2", pattern="shared_ip_cluster")
     # only ONE small transaction exists in this cluster — identity link dominates, no layered flow
     ds.add_transaction("T-CASEB-1", "A1200", "A1201", amount=35.0, days_ago=15, channel="transfer")
+
+
+def plant_additional_demo_scenarios(ds: SyntheticDataset) -> None:
+    """Six small, additive, hand-authored scenarios (DEMO-01..DEMO-06) that broaden
+    demo coverage beyond the three original Cases (A/B/C = A1100/A1200/A1027) WITHOUT
+    touching them. Each targets a specific signal the ring-scoring composite (see
+    tools/investigation.py::_find_fraud_ring) is meant to pick up on, including two
+    deliberately-benign look-alikes (DEMO-02, DEMO-05) that a naive 'any shared
+    signal = fraud' detector would wrongly flag, and one genuinely ambiguous case
+    (DEMO-06) that a good agent should call MEDIUM/WATCH rather than overconfidently
+    CRITICAL or LOW.
+    """
+    # DEMO-01: clean, isolated, single tiny transaction — should be a trivial LOW case.
+    ds.add_account("A1300", account_type="savings", status="ACTIVE", country="CA", created_at=_ts(days_ago=700)[0])
+    ds.persons.append({"id": "P-DEMO01", "name": "Casey Nguyen (synthetic)", "created_at": _ts(days_ago=700)[0]})
+    ds.link_owner("P-DEMO01", "A1300")
+    ds.add_account("A1301", account_type="savings", status="ACTIVE", country="CA", created_at=_ts(days_ago=650)[0])
+    ds.add_transaction("T-DEMO01-1", "A1300", "A1301", amount=18.0, days_ago=20, channel="transfer")
+    ds.mark_ground_truth("A1300", False, ring_id="NONE", pattern="legit", role="n/a")
+
+    # DEMO-02: BENIGN look-alike — two accounts share a device (e.g. household members on
+    # the same phone) but have NEVER transacted with each other. No money flow + no alert
+    # + no broker = should NOT be escalated just because of one shared-identity signal.
+    ds.add_device("D-DEMO02", device_type="ipad_family_shared", days_ago=300)
+    ds.add_account("A1310", account_type="checking", status="ACTIVE", country="GB", created_at=_ts(days_ago=300)[0])
+    ds.add_account("A1311", account_type="checking", status="ACTIVE", country="GB", created_at=_ts(days_ago=290)[0])
+    ds.link_device("A1310", "D-DEMO02")
+    ds.link_device("A1311", "D-DEMO02")
+    ds.mark_ground_truth("A1310", False, ring_id="NONE", pattern="benign_shared_device", role="n/a")
+    ds.mark_ground_truth("A1311", False, ring_id="NONE", pattern="benign_shared_device", role="n/a")
+
+    # DEMO-03: reciprocal wash-trading ring — 4 accounts with NO shared device/IP, purely a
+    # dense back-and-forth money-flow signature (A<->B, B<->C, C<->D, D<->A), which the
+    # ring-score composite's "reciprocal transfer" signal is specifically designed to catch
+    # even though identity-resolution signals are completely absent.
+    recip = ["A1320", "A1321", "A1322", "A1323"]
+    for i, acc in enumerate(recip):
+        ds.add_account(acc, account_type="digital_wallet", status="ACTIVE", country="VN",
+                        created_at=_ts(days_ago=40 - i)[0])
+        ds.mark_ground_truth(acc, True, ring_id="RING-DEMO-3", pattern="reciprocal_wash_ring", role="member")
+    pairs = [(0, 1), (1, 2), (2, 3), (3, 0)]
+    for k, (i, j) in enumerate(pairs):
+        ds.add_transaction(f"T-DEMO03-{k}a", recip[i], recip[j], amount=1200.0, days_ago=2, hours_ago=k)
+        ds.add_transaction(f"T-DEMO03-{k}b", recip[j], recip[i], amount=1150.0, days_ago=1, hours_ago=k)
+
+    # DEMO-04: layered movement that terminates in a real merchant purchase —
+    # Account -> Account -> Account -> Broker -> Account(self) -> Merchant.
+    chain4 = ["A1330", "A1331", "A1332"]
+    for i, acc in enumerate(chain4):
+        ds.add_account(acc, account_type="digital_wallet", status="ACTIVE", country="NG",
+                        created_at=_ts(days_ago=30 - i)[0])
+        ds.mark_ground_truth(acc, True, ring_id="RING-DEMO-4", pattern="layered_to_merchant",
+                              role="leader" if i == len(chain4) - 1 else "member")
+    ds.add_transaction("T-DEMO04-1", "A1330", "A1331", amount=6000.0, days_ago=2, hours_ago=6)
+    ds.add_transaction("T-DEMO04-2", "A1331", "A1332", amount=5700.0, days_ago=2, hours_ago=3)
+    ds.add_broker("BR-DEMO4", name="Northgate Shell Processor", broker_type="shell_company", risk_level="HIGH")
+    ds.link_broker("A1332", "BR-DEMO4")
+    ds.add_transaction("T-DEMO04-3", "A1332", "A1332", amount=5400.0, days_ago=1, hours_ago=2,
+                        channel="broker_payout", broker_id="BR-DEMO4")
+    ds.add_merchant("MER-DEMO4", name="Lagos Electronics Superstore", category="electronics")
+    ds.add_merchant_purchase("T-DEMO04-4", "A1332", "MER-DEMO4", amount=4000.0, days_ago=0, hours_ago=5)
+
+    # DEMO-05: BENIGN look-alike — two unrelated legit accounts both shop at the SAME
+    # popular merchant. A shared merchant alone must never be treated as a ring signal.
+    ds.add_account("A1340", account_type="checking", status="ACTIVE", country="US", created_at=_ts(days_ago=500)[0])
+    ds.add_account("A1341", account_type="checking", status="ACTIVE", country="AU", created_at=_ts(days_ago=480)[0])
+    ds.add_merchant("MER-RETAIL1", name="Everyday Online Retail", category="online_retail")
+    ds.add_merchant_purchase("T-DEMO05-1", "A1340", "MER-RETAIL1", amount=65.0, days_ago=5, hours_ago=1)
+    ds.add_merchant_purchase("T-DEMO05-2", "A1341", "MER-RETAIL1", amount=42.0, days_ago=9, hours_ago=3)
+    ds.mark_ground_truth("A1340", False, ring_id="NONE", pattern="shared_merchant_benign", role="n/a")
+    ds.mark_ground_truth("A1341", False, ring_id="NONE", pattern="shared_merchant_benign", role="n/a")
+
+    # DEMO-06: genuinely AMBIGUOUS — one shared device with a single other account, one
+    # small transfer, no broker, no alert. Real investigators disagree on cases like this;
+    # a well-calibrated agent should land on MEDIUM/WATCH, not an overconfident verdict.
+    ds.add_device("D-DEMO06", device_type="android", days_ago=90)
+    ds.add_account("A1350", account_type="digital_wallet", status="ACTIVE", country="PH", created_at=_ts(days_ago=90)[0])
+    ds.add_account("A1351", account_type="digital_wallet", status="ACTIVE", country="PH", created_at=_ts(days_ago=85)[0])
+    ds.link_device("A1350", "D-DEMO06")
+    ds.link_device("A1351", "D-DEMO06")
+    ds.add_transaction("T-DEMO06-1", "A1350", "A1351", amount=90.0, days_ago=6, hours_ago=2)
+    ds.mark_ground_truth("A1350", True, ring_id="RING-DEMO-6", pattern="ambiguous_weak_ring", role="member")
+    ds.mark_ground_truth("A1351", True, ring_id="RING-DEMO-6", pattern="ambiguous_weak_ring", role="member")
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +473,29 @@ def generate_legit_population(ds: SyntheticDataset, cfg: GeneratorConfig, rng: r
     return account_ids
 
 
+COMMON_MERCHANTS = [
+    ("MER-GROCERY1", "Fresh Market Grocers", "grocery"),
+    ("MER-RETAIL1", "Everyday Online Retail", "online_retail"),
+    ("MER-COFFEE1", "Daily Grind Coffee Co.", "food_and_beverage"),
+    ("MER-UTIL1", "City Utilities Co-op", "utilities"),
+]
+
+
 def generate_normal_transactions(ds: SyntheticDataset, cfg: GeneratorConfig, rng: random.Random,
                                   legit_accounts: list[str]) -> None:
     if len(legit_accounts) < 2:
         return
+
+    # Ordinary, everyday merchant spend for a slice of the legit population — this is what
+    # keeps Merchant/TO_MERCHANT data from being an accidental fraud-only signal: most
+    # merchant purchases in the graph belong to completely legitimate accounts.
+    for mid, name, category in COMMON_MERCHANTS:
+        ds.add_merchant(mid, name=name, category=category)
+    shoppers = rng.sample(legit_accounts, k=max(1, len(legit_accounts) // 2))
+    for i, aid in enumerate(shoppers):
+        mid, _, _ = rng.choice(COMMON_MERCHANTS)
+        ds.add_merchant_purchase(f"T-SHOP{i}", aid, mid, amount=rng.uniform(4, 180),
+                                  days_ago=rng.uniform(0, 60), hours_ago=rng.uniform(0, 23))
 
     # ~15% of accounts are "dormant": 0-1 small transactions, kept mostly isolated.
     shuffled = legit_accounts[:]
@@ -451,6 +596,12 @@ def generate_fraud_ring(ds: SyntheticDataset, pattern: str, ring_index: int, cfg
         ds.link_broker(accounts[-1], broker_id)
         ds.add_transaction(f"T-{ring_id}-cashout", accounts[-1], accounts[-1], amount=amount * 0.9,
                             days_ago=0, hours_ago=1, channel="broker_payout", broker_id=broker_id)
+        # end the layering chain in a real merchant spend, not just an abstract cash-out
+        merchant_id = f"MER-{ring_id}"
+        ds.add_merchant(merchant_id, name=f"Generic Online Retailer {ring_index}", category="online_retail")
+        ds.add_merchant_purchase(f"T-{ring_id}-spend", accounts[-1], merchant_id, amount=amount * 0.4,
+                                  days_ago=0, hours_ago=0.5)
+        ds.set_ground_truth_role(accounts[-1], ring_id, role="leader")
 
     elif pattern == "central_mule_leader":
         leader = accounts[0]
@@ -466,6 +617,11 @@ def generate_fraud_ring(ds: SyntheticDataset, pattern: str, ring_index: int, cfg
         ds.link_broker(leader, broker_id)
         ds.add_transaction(f"T-{ring_id}-cashout", leader, leader, amount=total * 0.92,
                             days_ago=0, hours_ago=1, channel="broker_payout", broker_id=broker_id)
+        merchant_id = f"MER-{ring_id}"
+        ds.add_merchant(merchant_id, name=f"Offshore Luxury Importer {ring_index}", category="luxury_retail")
+        ds.add_merchant_purchase(f"T-{ring_id}-spend", leader, merchant_id, amount=total * 0.3,
+                                  days_ago=0, hours_ago=0.2)
+        ds.set_ground_truth_role(leader, ring_id, role="leader")
 
     # cross-ring noise: occasionally a fraud-ring account transacts with a legit-looking account
     if rng.random() < cfg.noise_level:
@@ -479,6 +635,7 @@ def generate(cfg: Optional[GeneratorConfig] = None) -> SyntheticDataset:
     ds = SyntheticDataset()
 
     plant_demo_scenario(ds)
+    plant_additional_demo_scenarios(ds)
 
     legit_accounts = generate_legit_population(ds, cfg, rng, id_start=2000)
     generate_normal_transactions(ds, cfg, rng, legit_accounts)

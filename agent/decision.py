@@ -13,6 +13,7 @@ yields a visibly different decision.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 
@@ -56,6 +57,9 @@ def build_verdict(ctx, account_id: str) -> dict:
     component_size = ring_data.get("size", 1)
     is_ring = ring_data.get("is_ring", False)
     ring_members = ring_data.get("members", [account_id])
+    ring_score = ring_data.get("ring_score", 0.0)
+    ring_confidence = ring_data.get("ring_confidence", 0.0)
+    ring_reasons = ring_data.get("ring_reasons", [])
 
     leader_data = (leader_entry or {}).get("data", {}) or {}
     ring_leader = leader_data.get("ring_leader")
@@ -82,12 +86,12 @@ def build_verdict(ctx, account_id: str) -> dict:
     # worked example exactly).
     # ------------------------------------------------------------------
     reasoning: list[str] = []
-    if is_ring and component_size > 1:
-        reasoning.append(f"{component_size} accounts are in the same connected fraud component "
-                          f"({', '.join(ring_members[:12])}{'...' if len(ring_members) > 12 else ''}).")
-    elif component_size > 1:
-        reasoning.append(f"Only minimal connectivity found: {account_id} is linked to "
-                          f"{component_size - 1} other account(s), below the ring-detection threshold.")
+    if component_size > 1:
+        reasoning.append(f"{component_size} accounts are in the same connected component "
+                          f"({', '.join(ring_members[:12])}{'...' if len(ring_members) > 12 else ''}). "
+                          f"Ring score = {ring_score:.2f} (confidence {ring_confidence:.2f}).")
+        for r in ring_reasons[1:]:  # skip the generic "N accounts form a component" line, already said above
+            reasoning.append(r)
     else:
         reasoning.append(f"{account_id} has no identity or money-flow links to any other account in the graph.")
     if shared_device_accounts:
@@ -111,14 +115,18 @@ def build_verdict(ctx, account_id: str) -> dict:
     # ------------------------------------------------------------------
     # Verdict + action (THIS is what the graph structure directly decides)
     # ------------------------------------------------------------------
+    # Confidence now blends BOTH raw component size and the richer ring_score
+    # composite (size alone can't distinguish a dense, corroborated ring from
+    # a large but loosely-connected one).
+    ring_strength = max(min(component_size / 9, 1.0), ring_score)
     if risk_class == "CRITICAL":
         verdict = "FRAUD RING CONFIRMED"
         action = "ESCALATE_FOR_MANUAL_INVESTIGATION"
-        confidence = min(0.99, 0.75 + 0.2 * min(component_size / 9, 1.0))
+        confidence = min(0.99, 0.75 + 0.2 * ring_strength)
     elif risk_class == "HIGH":
         verdict = "SUSPICIOUS — LIKELY RING MEMBER"
         action = "FLAG_AND_REQUEST_MANUAL_REVIEW"
-        confidence = 0.65 + 0.1 * min(component_size / 9, 1.0)
+        confidence = 0.65 + 0.1 * ring_strength
     elif risk_class == "MEDIUM":
         verdict = "WEAK SIGNAL — MONITOR"
         action = "ADD_TO_WATCHLIST"
@@ -138,6 +146,9 @@ def build_verdict(ctx, account_id: str) -> dict:
         "reasoning": reasoning,
         "ring_members": ring_members,
         "ring_leader": ring_leader,
+        "ring_score": ring_score,
+        "ring_confidence": ring_confidence,
+        "ring_reasons": ring_reasons,
         "money_path": best_money_path,
         "shared_device_account_count": len(shared_device_accounts),
         "shared_ip_account_count": len(shared_ip_accounts),
@@ -179,20 +190,50 @@ def execute_recommended_action(ctx, account_id: str, verdict: dict) -> list[dict
 
     reason = "; ".join(verdict.get("reasoning", [])) or verdict.get("verdict", "")
 
-    call("create_investigation_case", account_id=account_id,
-         notes=f"Auto-generated from verdict: {verdict.get('verdict')}")
+    case_result = call("create_investigation_case", account_id=account_id,
+                        notes=f"Auto-generated from verdict: {verdict.get('verdict')}")
+    case_id = results[0]["data"]["case_id"]
+
+    # ------------------------------------------------------------------
+    # Second-order evidence graph (additive): one GraphFinding + Evidence
+    # node per reasoning line, linked to the Case via SUPPORTED_BY, plus the
+    # reciprocal Account-[:HAS_CASE]->Case edge. This is what lets
+    # docs/DEMO_SCRIPT.md's sample Cypher query "what graph evidence
+    # supported this case?" and get a real answer straight from the graph.
+    gs = ctx.graph_store
+    findings = [{"id": f"{case_id}-F{i}", "tool": "generate_verdict", "summary": line}
+                for i, line in enumerate(verdict.get("reasoning", []))]
+    finding_ids = [f["id"] for f in findings]
+    if findings:
+        try:
+            gs.attach_case_evidence(case_id, account_id, findings)
+        except Exception as exc:  # noqa: BLE001 — evidence-graph write is additive, never block the action
+            logging.getLogger("ringtrace.agent.decision").warning("attach_case_evidence failed: %s", exc)
+
+    def record_action_node(action_type: str):
+        """Writes the generic (Case)-[:RESULTED_IN]->(Action)-[:TRIGGERED_BY]->(GraphFinding)
+        bookkeeping for whichever specific action tool(s) just ran."""
+        action_id = f"{case_id}-A-{action_type}"
+        try:
+            gs.record_action_outcome(case_id, action_id, action_type, reason)
+            if finding_ids:
+                gs.link_action_to_findings(action_id, finding_ids)
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger("ringtrace.agent.decision").warning("record_action_outcome failed: %s", exc)
 
     if action == "ESCALATE_FOR_MANUAL_INVESTIGATION":
         call("flag_account", account_id=account_id, reason=reason)
         call("mark_high_risk", account_id=account_id, risk_score=verdict.get("risk_score", 0.9))
         call("request_manual_review", account_id=account_id, reason=reason)
-        case_id = results[0]["data"]["case_id"]
         call("escalate_case", case_id=case_id, reason=reason)
+        record_action_node(action)
     elif action == "FLAG_AND_REQUEST_MANUAL_REVIEW":
         call("flag_account", account_id=account_id, reason=reason)
         call("request_manual_review", account_id=account_id, reason=reason)
+        record_action_node(action)
     elif action == "ADD_TO_WATCHLIST":
         call("add_to_watchlist", entity_id=account_id, entity_type="Account", reason=reason)
-    # NO_ACTION_REQUIRED -> the case record itself is the only artifact
+        record_action_node(action)
+    # NO_ACTION_REQUIRED -> the case + evidence graph record is the only artifact
 
     return results

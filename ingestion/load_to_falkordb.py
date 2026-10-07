@@ -113,7 +113,12 @@ def load_dataset(graph, ds: SyntheticDataset, wipe: bool = True) -> dict:
     # tied to the lazily-evaluated result stream). To guarantee every
     # transaction's FROM/TO/TRANSFERRED_TO edges are always created, we run
     # the unconditional writes in one batch and the optional broker-routing
-    # edge as a second, separately-filtered batch.
+    # edge as a second, separately-filtered batch. The same reasoning is why
+    # account->account transfers and account->merchant purchases are split
+    # into two DIFFERENT row lists (filtered in Python) and loaded as two
+    # separate batches below, rather than one Cypher query with a branching
+    # WHERE/CASE on to_account vs merchant_id.
+    account_to_account_rows = [t for t in ds.transactions if t.get("to_account")]
     _batch(graph, """
         UNWIND $rows AS row
         MATCH (src:Account {id: row.from_account})
@@ -124,7 +129,23 @@ def load_dataset(graph, ds: SyntheticDataset, wipe: bool = True) -> dict:
         CREATE (t)-[:TO]->(dst)
         CREATE (src)-[:TRANSFERRED_TO {amount: toFloat(row.amount), timestamp: toInteger(row.timestamp),
                                        txn_id: row.id}]->(dst)
-    """, ds.transactions, "Transaction nodes + TRANSFERRED_TO edges")
+    """, account_to_account_rows, "Transaction nodes + TRANSFERRED_TO edges")
+
+    # Merchant purchases: one-sided spends (Account -> Merchant, no destination Account).
+    # These complete realistic end-of-chain narratives (e.g. Account -> Broker -> Account ->
+    # Merchant) that pure Account<->Account transfers can't represent, without polluting the
+    # directed money-flow graph (TRANSFERRED_TO) that ring/leader/path algorithms run over.
+    merchant_purchase_rows = [t for t in ds.transactions if not t.get("to_account") and t.get("merchant_id")]
+    _batch(graph, """
+        UNWIND $rows AS row
+        MATCH (src:Account {id: row.from_account})
+        MATCH (m:Merchant {id: row.merchant_id})
+        CREATE (t:Transaction {id: row.id, amount: toFloat(row.amount), timestamp: toInteger(row.timestamp),
+                                timestamp_iso: row.timestamp_iso, channel: row.channel, status: row.status})
+        CREATE (t)-[:FROM]->(src)
+        CREATE (t)-[:TO_MERCHANT {amount: toFloat(row.amount), timestamp: toInteger(row.timestamp),
+                                  txn_id: row.id}]->(m)
+    """, merchant_purchase_rows, "Transaction nodes + TO_MERCHANT edges")
 
     routed_rows = [t for t in ds.transactions if t.get("broker_id")]
     _batch(graph, """

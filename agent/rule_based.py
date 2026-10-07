@@ -45,9 +45,15 @@ def run_investigation(ctx, account_id: str) -> list[dict]:
     ring_data = ring_entry.get("data") or {}
     members = ring_data.get("members", [account_id])
     is_ring = ring_data.get("is_ring", False)
+    ring_score = ring_data.get("ring_score", 0.0)
 
+    # Dig deeper not just when the component crosses the old size>=3 threshold, but
+    # whenever the transparent composite ring score shows *any* meaningful corroborating
+    # signal (shared identity, reciprocal flow, broker concentration, etc.) — this is what
+    # lets genuinely ambiguous 2-account cases still get a real investigation instead of
+    # being dismissed purely for being "too small".
     ring_leader = None
-    if is_ring and len(members) > 1:
+    if (is_ring or ring_score >= 0.2) and len(members) > 1:
         leader_entry = call("rank_ring_leaders", account_ids=members)
         ring_leader = (leader_entry.get("data") or {}).get("ring_leader")
 

@@ -45,6 +45,12 @@ DEMO_PRESETS = {
     "Case C — Dense ring + confirmed money flow (expect CRITICAL)": "A1027",
     "Case B — Shared-IP identity cluster, no money trail (expect HIGH)": "A1200",
     "Case A — Isolated / low connectivity (expect LOW)": "A1100",
+    "DEMO-01 — Clean, isolated account": "A1300",
+    "DEMO-02 — Benign shared device, no money (should NOT escalate)": "A1310",
+    "DEMO-03 — Reciprocal wash-trading ring (no shared identity)": "A1320",
+    "DEMO-04 — Layered movement ending in a real merchant purchase": "A1332",
+    "DEMO-05 — Benign: two strangers who shop at the same merchant": "A1340",
+    "DEMO-06 — Genuinely ambiguous (weak signal, should be MEDIUM)": "A1350",
 }
 
 
@@ -235,6 +241,84 @@ def render_case_report(result):
                        file_name=f"ringtrace_case_{result.account_id}.md", mime="text/markdown")
     with st.expander("Preview report", expanded=False):
         st.markdown(markdown)
+    # Also persist a server-side copy under ./reports (this is what the `./reports`
+    # volume in docker-compose.yml is for — reports survive container restarts and
+    # are inspectable on the host without going through the browser download).
+    try:
+        reports_dir = Path(__file__).resolve().parent.parent / "reports"
+        reports_dir.mkdir(exist_ok=True)
+        (reports_dir / f"ringtrace_case_{result.account_id}.md").write_text(markdown)
+    except OSError:
+        pass  # read-only filesystem or similar — the in-browser download still works
+
+
+def render_why_this_action(result):
+    """The dedicated 'WHY DID RINGTRACE TAKE THIS ACTION?' panel (judge-facing
+    centerpiece): makes the full causal chain
+
+        GRAPH FACTS -> TOOL CALLS -> EVIDENCE -> RISK -> DECISION -> ACTION
+
+    impossible to miss, with every number traced back to a specific FalkorDB
+    query result already captured in the evidence trail — nothing here is
+    re-derived or guessed, it's all read straight out of `result.verdict`
+    and `result.steps`.
+    """
+    verdict = result.verdict
+    risk_class = verdict.get("risk_class", "LOW")
+    color = RISK_COLORS.get(risk_class, "#22c55e")
+
+    st.markdown(
+        f"""<div style="padding:14px 18px;border-radius:10px;background:#111827;color:#e5e7eb;">
+        <b>WITHOUT FALKORDB, THIS DECISION COULD NOT HAVE BEEN MADE.</b><br/>
+        <span style="color:#9ca3af;font-size:0.9em">Every box below is one real, parameterized Cypher query
+        result — ring membership came from <code>algo.WCC</code>, the leader came from
+        <code>algo.pageRank</code>, the money trail came from a variable-length
+        <code>TRANSFERRED_TO*</code> path match. Remove the graph and none of this evidence exists.</span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown("#### \U0001F4CA 1. GRAPH FACTS")
+        st.metric("Connected component size", len(verdict.get("ring_members", [result.account_id])))
+        st.metric("Ring score (composite)", f"{verdict.get('ring_score', 0.0):.2f}")
+        st.metric("Ring confidence", f"{verdict.get('ring_confidence', 0.0):.2f}")
+        if verdict.get("ring_leader"):
+            st.caption(f"\U0001F451 Ring leader (PageRank): **{verdict['ring_leader']}**")
+        if verdict.get("money_path"):
+            mp = verdict["money_path"]
+            st.caption(f"\U0001F4B8 Money path: {' → '.join(mp['accounts'])} ({mp['hops']} hop(s))")
+        st.caption(f"\U0001F517 Shared devices: {verdict.get('shared_device_account_count', 0)} account(s) · "
+                   f"Shared IPs: {verdict.get('shared_ip_account_count', 0)} account(s)")
+
+        st.markdown("#### \U0001F6E0\uFE0F 2. TOOL CALLS")
+        tools_used = verdict.get("tools_used") or sorted({s["tool"] for s in result.steps if s.get("ok")})
+        for t in tools_used:
+            st.markdown(f"- `{t}`")
+
+    with c2:
+        st.markdown("#### \U0001F4DD 3. EVIDENCE (reasoning trail)")
+        for i, line in enumerate(verdict.get("reasoning", []), 1):
+            st.markdown(f"{i}. {line}")
+
+    with c3:
+        st.markdown("#### \u2696\uFE0F 4. RISK")
+        st.markdown(f"**{verdict.get('risk_score', 0):.2f}** ({risk_class}) via `{verdict.get('risk_method', 'n/a')}`")
+        if verdict.get("graph_guardrail_applied"):
+            st.caption(f"Raw model: {verdict.get('raw_model_score', 0):.2f} → graph-guardrail-adjusted: "
+                       f"{verdict.get('risk_score', 0):.2f}")
+
+        st.markdown("#### \U0001F3AF 5. DECISION")
+        st.markdown(f"<span style='color:{color};font-weight:700'>{verdict.get('verdict')}</span> "
+                    f"(confidence {verdict.get('confidence', 0):.0%})", unsafe_allow_html=True)
+
+        st.markdown("#### \u26A1 6. ACTION")
+        action = verdict.get("recommended_action", "NO_ACTION_REQUIRED")
+        st.markdown(f"`{action}`")
+        st.caption(ACTION_DESCRIPTIONS.get(action, ""))
 
 
 def main():
@@ -263,18 +347,21 @@ def main():
         return
 
     st.markdown("---")
-    tabs = st.tabs(["B. Agent Trace", "C. Graph View", "D. Risk", "E. Evidence", "F. Decision", "G. Case Report"])
+    tabs = st.tabs(["\U0001F50D Why This Action?", "B. Agent Trace", "C. Graph View", "D. Risk",
+                    "E. Evidence", "F. Decision", "G. Case Report"])
     with tabs[0]:
-        render_agent_trace(result)
+        render_why_this_action(result)
     with tabs[1]:
-        render_graph_view(result)
+        render_agent_trace(result)
     with tabs[2]:
-        render_risk_panel(result)
+        render_graph_view(result)
     with tabs[3]:
-        render_evidence(result)
+        render_risk_panel(result)
     with tabs[4]:
-        render_decision(result)
+        render_evidence(result)
     with tabs[5]:
+        render_decision(result)
+    with tabs[6]:
         render_case_report(result)
 
 

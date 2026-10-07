@@ -1,0 +1,179 @@
+{
+  "disclaimer": "SYNTHETIC DATA EVALUATION ONLY. Describes recovery of the planted ring structure, not real-world fraud-detection performance. Distinct from models/synthetic_eval_report.json, which scores the RandomForest classifier alone \u2014 this report scores the FULL agent decision pipeline (ring score + ML + guardrail + rules).",
+  "ring_detection": {
+    "rings_evaluated": 10,
+    "mean_precision": 0.905,
+    "mean_recall": 0.988,
+    "per_ring": {
+      "RING-DEMO-1": {
+        "true_size": 9,
+        "detected_size": 9,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-DEMO-2": {
+        "true_size": 5,
+        "detected_size": 5,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-DEMO-3": {
+        "true_size": 4,
+        "detected_size": 4,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-DEMO-4": {
+        "true_size": 3,
+        "detected_size": 3,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-DEMO-6": {
+        "true_size": 2,
+        "detected_size": 2,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-GEN-0": {
+        "true_size": 8,
+        "detected_size": 7,
+        "precision": 1.0,
+        "recall": 0.875
+      },
+      "RING-GEN-1": {
+        "true_size": 8,
+        "detected_size": 8,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-GEN-2": {
+        "true_size": 8,
+        "detected_size": 8,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "RING-GEN-3": {
+        "true_size": 8,
+        "detected_size": 153,
+        "precision": 0.052,
+        "recall": 1.0
+      },
+      "RING-GEN-4": {
+        "true_size": 8,
+        "detected_size": 8,
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    "legit_accounts_sampled": 30,
+    "legit_accounts_falsely_swept_into_large_component": 23
+  },
+  "leader_identification": {
+    "rings_with_known_leader": 4,
+    "accuracy": 1.0,
+    "details": [
+      {
+        "ring_id": "RING-DEMO-1",
+        "true_leader": "A1001",
+        "predicted_leader": "A1001",
+        "correct": true
+      },
+      {
+        "ring_id": "RING-DEMO-4",
+        "true_leader": "A1332",
+        "predicted_leader": "A1332",
+        "correct": true
+      },
+      {
+        "ring_id": "RING-GEN-3",
+        "true_leader": "A5307",
+        "predicted_leader": "A5307",
+        "correct": true
+      },
+      {
+        "ring_id": "RING-GEN-4",
+        "true_leader": "A5400",
+        "predicted_leader": "A5400",
+        "correct": true
+      }
+    ]
+  },
+  "money_path_success": {
+    "chains_evaluated": 4,
+    "success_rate": 0.75,
+    "details": [
+      {
+        "ring_id": "RING-DEMO-1",
+        "source": "A1027",
+        "destination": "A1001",
+        "found": true
+      },
+      {
+        "ring_id": "RING-DEMO-4",
+        "source": "A1330",
+        "destination": "A1332",
+        "found": true
+      },
+      {
+        "ring_id": "RING-GEN-3",
+        "source": "A5300",
+        "destination": "A5307",
+        "found": false
+      },
+      {
+        "ring_id": "RING-GEN-4",
+        "source": "A5401",
+        "destination": "A5400",
+        "found": true
+      }
+    ]
+  },
+  "identity_link_recall": {
+    "accounts_evaluated": 5,
+    "recall": 1.0,
+    "details": [
+      {
+        "account_id": "A1027",
+        "expected": "shared_device",
+        "found": true
+      },
+      {
+        "account_id": "A1020",
+        "expected": "shared_device",
+        "found": true
+      },
+      {
+        "account_id": "A1200",
+        "expected": "shared_ip",
+        "found": true
+      },
+      {
+        "account_id": "A1310",
+        "expected": "shared_device",
+        "found": true
+      },
+      {
+        "account_id": "A1350",
+        "expected": "shared_device",
+        "found": true
+      }
+    ]
+  },
+  "action_accuracy_vs_ground_truth": {
+    "n_accounts": 80,
+    "elapsed_seconds": 57.1,
+    "true_positive": 39,
+    "false_positive": 0,
+    "true_negative": 40,
+    "false_negative": 1,
+    "accuracy": 0.988,
+    "precision": 1.0,
+    "recall": 0.975,
+    "f1": 0.987,
+    "false_negative_examples": [
+      "A1331"
+    ],
+    "false_positive_examples": []
+  }
+}

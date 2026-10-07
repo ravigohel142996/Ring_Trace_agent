@@ -33,18 +33,20 @@ def _get_account_context(ctx: ToolContext, inp: GetAccountContextInput) -> ToolR
                            summary=f"Account {inp.account_id} was not found in the graph.",
                            error="account_not_found")
     row = res.data[0]
-    account, owner, devices, ips, brokers, alerts, outgoing, incoming = row
+    account, owner, devices, ips, brokers, alerts, outgoing, incoming, merchant_purchases = row
     outgoing = [o for o in outgoing if o.get("to") is not None]
     incoming = [i for i in incoming if i.get("from") is not None]
+    merchant_purchases = [m for m in merchant_purchases if m.get("merchant_id") is not None]
     data = {
         "account": account, "owner": owner, "devices": devices, "ips": ips,
         "brokers": brokers, "alerts": alerts, "outgoing_transfers": outgoing,
-        "incoming_transfers": incoming,
+        "incoming_transfers": incoming, "merchant_purchases": merchant_purchases,
     }
     summary = (
         f"Account {inp.account_id} ({account.get('status', '?')}, {account.get('country', '?')}): "
         f"{len(devices)} device(s), {len(ips)} IP(s), {len(brokers)} broker(s), "
-        f"{len(alerts)} alert(s), {len(outgoing)} outgoing / {len(incoming)} incoming transfer(s)."
+        f"{len(alerts)} alert(s), {len(outgoing)} outgoing / {len(incoming)} incoming transfer(s), "
+        f"{len(merchant_purchases)} merchant purchase(s)."
     )
     return ToolResult(ok=True, tool="get_account_context", summary=summary, data=data,
                        evidence=[res.as_evidence()])
@@ -78,22 +80,119 @@ def _find_fraud_ring(ctx: ToolContext, inp: FindFraudRingInput) -> ToolResult:
     summary_res = gs.accounts_summary(members)
     is_ring = len(members) >= inp.min_component_size and len(members) > 1
 
+    # ------------------------------------------------------------------
+    # Transparent composite ring score. Replaces the old "size >= 3 means
+    # ring" heuristic with a weighted blend of graph-native signals, each
+    # individually auditable via its own parameterized Cypher query. A
+    # single boolean (`is_ring`) is still returned for backward compatibility
+    # with callers that only need a yes/no, but `ring_score`/`ring_confidence`
+    # /`ring_reasons` are the real, explainable verdict inputs.
+    # ------------------------------------------------------------------
+    size = len(members)
+    max_pairs = max(size * (size - 1) / 2, 1)
+    evidence_extra = [edges_res.as_evidence(), summary_res.as_evidence()]
+
+    pair_res = gs.shared_identity_pair_counts(members)
+    shared_device_pairs, shared_ip_pairs = pair_res.data[0] if pair_res.data else (0, 0)
+    evidence_extra.append(pair_res.as_evidence())
+
+    recip_res = gs.reciprocal_transfer_pairs(members)
+    reciprocal_pairs = recip_res.data[0][0] if recip_res.data else 0
+    evidence_extra.append(recip_res.as_evidence())
+
+    txn_res = gs.component_txn_stats(members)
+    txn_count, total_amount, earliest_ts, latest_ts = txn_res.data[0] if txn_res.data else (0, 0.0, None, None)
+    txn_count = txn_count or 0
+    total_amount = total_amount or 0.0
+    evidence_extra.append(txn_res.as_evidence())
+
+    broker_res = gs.component_broker_count(members)
+    broker_count = broker_res.data[0][0] if broker_res.data else 0
+    evidence_extra.append(broker_res.as_evidence())
+
+    alert_res = gs.component_alert_count(members)
+    alerted_member_count = alert_res.data[0][0] if alert_res.data else 0
+    evidence_extra.append(alert_res.as_evidence())
+
+    hours_span = max(((latest_ts - earliest_ts) / 3600.0), 0.0) if (earliest_ts and latest_ts) else 0.0
+
+    pagerank_concentration = 0.0
+    if size > 1:
+        pr_res = gs.pagerank("TRANSFERRED_TO")
+        member_scores = [s for aid, s in pr_res.data if aid in set(members)]
+        total_pr = sum(member_scores)
+        if total_pr > 0:
+            pagerank_concentration = max(member_scores) / total_pr
+
+    signals = {
+        "component_size": min((size - 1) / 10.0, 1.0) if size > 1 else 0.0,
+        "shared_device_density": min(shared_device_pairs / max_pairs, 1.0),
+        "shared_ip_density": min(shared_ip_pairs / max_pairs, 1.0),
+        "reciprocal_density": min(reciprocal_pairs / max_pairs, 1.0),
+        "txn_density": min(txn_count / max(size * 3, 1), 1.0),
+        "broker_concentration": min(broker_count / 2.0, 1.0) if broker_count else 0.0,
+        "alert_ratio": min(alerted_member_count / max(size, 1), 1.0),
+        "pagerank_concentration": pagerank_concentration,
+        "txn_velocity": 1.0 if (txn_count >= 3 and 0 < hours_span <= 48) else min(txn_count / 20.0, 1.0),
+    }
+    weights = {
+        "component_size": 0.15, "shared_device_density": 0.15, "shared_ip_density": 0.10,
+        "reciprocal_density": 0.15, "txn_density": 0.10, "broker_concentration": 0.10,
+        "alert_ratio": 0.10, "pagerank_concentration": 0.10, "txn_velocity": 0.05,
+    }
+    ring_score = round(min(sum(signals[k] * weights[k] for k in weights), 1.0), 3) if size > 1 else 0.0
+    nonzero_signals = sum(1 for v in signals.values() if v > 0.05)
+    ring_confidence = round(nonzero_signals / len(signals), 2) if size > 1 else 0.0
+
+    ring_reasons: list[str] = [f"{size} account(s) form one weakly-connected component."]
+    if shared_device_pairs:
+        ring_reasons.append(f"{shared_device_pairs} account pair(s) in this component share a device.")
+    if shared_ip_pairs:
+        ring_reasons.append(f"{shared_ip_pairs} account pair(s) in this component share an IP address.")
+    if reciprocal_pairs:
+        ring_reasons.append(f"{reciprocal_pairs} account pair(s) show reciprocal back-and-forth transfers "
+                             f"(wash-trading / layering signature).")
+    if txn_count:
+        ring_reasons.append(f"{txn_count} internal transfer(s) totaling ${total_amount:,.2f} moved strictly "
+                             f"between members of this component.")
+    if broker_count:
+        ring_reasons.append(f"Members collectively route through {broker_count} distinct broker(s)/mixer(s).")
+    if alerted_member_count:
+        ring_reasons.append(f"{alerted_member_count} member(s) already carry an open fraud alert.")
+    if pagerank_concentration >= 0.25:
+        ring_reasons.append(f"Money flow is concentrated: the top account holds "
+                             f"{pagerank_concentration*100:.0f}% of this component's PageRank mass.")
+    if signals["txn_velocity"] >= 0.5 and hours_span:
+        ring_reasons.append(f"{txn_count} transfer(s) occurred within a {hours_span:.1f}-hour window "
+                             f"(high velocity).")
+
     summary = (
-        f"Account {inp.account_id} belongs to a weakly-connected component of {len(members)} account(s)"
-        f"{' — flagged as a probable fraud ring' if is_ring else ' — too small to call a ring'}."
+        f"Account {inp.account_id} belongs to a weakly-connected component of {len(members)} account(s). "
+        f"Ring score = {ring_score:.2f} (confidence {ring_confidence:.2f})"
+        f"{' — flagged as a probable fraud ring' if is_ring else ' — below the simple size threshold, but see ring_score for a nuanced read'}."
     )
     data = {
         "component_id": my_component_id,
         "members": members,
         "size": len(members),
         "is_ring": is_ring,
+        "ring_score": ring_score,
+        "ring_confidence": ring_confidence,
+        "ring_reasons": ring_reasons,
+        "ring_signals": signals,
+        "ring_signal_raw": {
+            "shared_device_pairs": shared_device_pairs, "shared_ip_pairs": shared_ip_pairs,
+            "reciprocal_pairs": reciprocal_pairs, "txn_count": txn_count, "total_amount": total_amount,
+            "broker_count": broker_count, "alerted_member_count": alerted_member_count,
+            "pagerank_concentration": round(pagerank_concentration, 3), "hours_span": round(hours_span, 1),
+        },
         "edges": [{"source": s, "target": t, "via": via, "ref": ref, "weight": w}
                   for s, t, via, ref, w in edges_res.data],
         "member_summary": [{"id": i, "status": s, "account_type": t, "country": c, "alert_count": ac}
                             for i, s, t, c, ac in summary_res.data],
     }
     return ToolResult(ok=True, tool="find_fraud_ring", summary=summary, data=data,
-                       evidence=[wcc.as_evidence(), edges_res.as_evidence(), summary_res.as_evidence()])
+                       evidence=[wcc.as_evidence(), *evidence_extra])
 
 
 # ---------------------------------------------------------------------------
