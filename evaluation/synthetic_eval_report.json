@@ -1,0 +1,96 @@
+{
+  "disclaimer": "SYNTHETIC DATA EVALUATION ONLY. Not a claim of real-world fraud-detection accuracy.",
+  "n_accounts_total": 219,
+  "n_train": 164,
+  "n_test": 55,
+  "fraud_ratio_in_data": 0.2876712328767123,
+  "accuracy": 0.9454545454545454,
+  "precision": 0.8823529411764706,
+  "recall": 0.9375,
+  "f1": 0.9090909090909091,
+  "roc_auc": 0.9951923076923077,
+  "feature_importances": {
+    "degree_linked": 0.0671057204108689,
+    "out_txn_count": 0.2107837756009164,
+    "in_txn_count": 0.16350358305908094,
+    "total_out_amount": 0.07631686021653646,
+    "total_in_amount": 0.05182903907545653,
+    "net_flow": 0.028298554620582006,
+    "pagerank_money": 0.04717406404812054,
+    "pagerank_identity": 0.10787291141809564,
+    "component_size": 0.21358860968219476,
+    "num_shared_devices": 0.0028327173655669233,
+    "num_accounts_sharing_devices": 0.009602824579856522,
+    "num_shared_ips": 0.0033615678508755013,
+    "num_accounts_sharing_ips": 0.00994266300251319,
+    "broker_count": 0.004113737932074345,
+    "hops_to_known_alert": 0.0013016745685274717,
+    "suspicious_neighbor_ratio": 0.0023716965687340013,
+    "has_own_alert": 0.0
+  },
+  "classification_report": {
+    "0": {
+      "precision": 0.9736842105263158,
+      "recall": 0.9487179487179487,
+      "f1-score": 0.961038961038961,
+      "support": 39.0
+    },
+    "1": {
+      "precision": 0.8823529411764706,
+      "recall": 0.9375,
+      "f1-score": 0.9090909090909091,
+      "support": 16.0
+    },
+    "accuracy": 0.9454545454545454,
+    "macro avg": {
+      "precision": 0.9280185758513932,
+      "recall": 0.9431089743589743,
+      "f1-score": 0.935064935064935,
+      "support": 55.0
+    },
+    "weighted avg": {
+      "precision": 0.9471151139881789,
+      "recall": 0.9454545454545454,
+      "f1-score": 0.9459268004722551,
+      "support": 55.0
+    }
+  },
+  "feature_means": {
+    "degree_linked": 12.876712328767123,
+    "out_txn_count": 4.447488584474886,
+    "in_txn_count": 4.438356164383562,
+    "total_out_amount": 193637.43488584465,
+    "total_in_amount": 186579.16593607288,
+    "net_flow": -7058.268949771753,
+    "pagerank_money": 0.0019610204343730796,
+    "pagerank_identity": 0.0020901549734562187,
+    "component_size": 108.68036529680366,
+    "num_shared_devices": 0.1643835616438356,
+    "num_accounts_sharing_devices": 0.6027397260273972,
+    "num_shared_ips": 0.1095890410958904,
+    "num_accounts_sharing_ips": 0.410958904109589,
+    "broker_count": 0.0182648401826484,
+    "hops_to_known_alert": 95.42465753424658,
+    "suspicious_neighbor_ratio": 0.004321591650358773,
+    "has_own_alert": 0.0045662100456621
+  },
+  "feature_stds": {
+    "degree_linked": 7.188060702621541,
+    "out_txn_count": 3.6761980002788768,
+    "in_txn_count": 3.867008070052278,
+    "total_out_amount": 225961.16629269285,
+    "total_in_amount": 217699.05427197527,
+    "net_flow": 81829.13575277431,
+    "pagerank_money": 0.0018572001829881774,
+    "pagerank_identity": 0.0008357272838087902,
+    "component_size": 67.65168568493128,
+    "num_shared_devices": 0.3714723481184223,
+    "num_accounts_sharing_devices": 1.8229404064655252,
+    "num_shared_ips": 0.32741595331452017,
+    "num_accounts_sharing_ips": 1.447892645530835,
+    "broker_count": 0.1342143404072776,
+    "hops_to_known_alert": 18.40391697055938,
+    "suspicious_neighbor_ratio": 0.023889805822659864,
+    "has_own_alert": 0.06757373783994859
+  }
+}
