@@ -124,8 +124,14 @@ def health_check(graph_name: Optional[str] = None, retries: int = 1, retry_delay
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
             logger.warning("FalkorDB health check failed (attempt %s): %s", attempt + 1, last_error)
-            time.sleep(retry_delay)
-            get_db(force_reconnect=True)
+            if attempt < retries:
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+                try:
+                    get_db(force_reconnect=True)
+                except Exception as reconnect_exc:  # connection can remain down during the retry
+                    last_error = str(reconnect_exc)
+                    logger.warning("FalkorDB reconnect failed: %s", last_error)
     return {
         "connected": False,
         "host": os.getenv("FALKORDB_HOST", "localhost"),

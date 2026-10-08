@@ -470,6 +470,12 @@ class GraphStore:
             "entity_type": entity_type, "reason": reason,
         })
 
+    def list_cases(self, limit: int = 100) -> QueryResult:
+        """List durable investigation cases stored in FalkorDB."""
+        safe_limit = max(1, min(int(limit), 500))
+        cypher = f"MATCH (c:Case) RETURN c {{.*}} AS case ORDER BY c.created_at DESC LIMIT {safe_limit}"
+        return self._run(cypher)
+
     def get_case(self, case_id: str) -> QueryResult:
         cypher = "MATCH (c:Case {id: $id}) RETURN c {.*} AS case"
         return self._run(cypher, {"id": case_id})

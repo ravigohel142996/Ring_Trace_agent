@@ -1,0 +1,350 @@
+"""FastAPI application for the RingTrace investigation engine.
+
+All investigation and decision results are produced by the existing agent,
+tools, risk scorer, and FalkorDB graph layer. The API never substitutes
+fixture results when the graph is unavailable.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
+
+from agent.decision import execute_recommended_action
+from agent.investigator import Investigator, extract_account_id
+from api.graph_export import build_graph_export
+from api.schemas import (
+    ActionApprovalResponse,
+    ActionExecutionResponse,
+    HealthResponse,
+    InvestigationRequest,
+    InvestigationSummary,
+    Scenario,
+)
+from api.store import CaseNotFound, InvestigationStore, InvalidCaseTransition
+from graph.connection import get_graph, health_check
+from graph.queries import GraphStore
+from models.risk_scorer import RiskScorer
+from tools.context import ToolContext
+
+logger = logging.getLogger("ringtrace.api")
+app = FastAPI(
+    title="RingTrace API",
+    description="Graph-backed fraud-ring investigation and simulated action API.",
+    version="1.0.0",
+)
+app.state.investigations = InvestigationStore()
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+
+
+SCENARIOS: tuple[dict[str, str], ...] = (
+    {"id": "CASE-A", "account_id": "A1100", "title": "Isolated account", "description": "Clean reference account with no shared identity or money-flow links.", "risk_focus": "LOW / no action"},
+    {"id": "CASE-B", "account_id": "A1200", "title": "Identity-linked only", "description": "Shared identity links without a corroborating money trail.", "risk_focus": "HIGH / manual review"},
+    {"id": "CASE-C", "account_id": "A1027", "title": "Ring with money flow", "description": "Connected fraud-ring reference case with PageRank and multi-hop money movement.", "risk_focus": "CRITICAL / escalation"},
+    {"id": "DEMO-01", "account_id": "A1300", "title": "Clean isolated account", "description": "Sanity check for an isolated low-risk account.", "risk_focus": "LOW"},
+    {"id": "DEMO-02", "account_id": "A1310", "title": "Benign shared device", "description": "Household-style shared device with no money movement.", "risk_focus": "Benign look-alike"},
+    {"id": "DEMO-03", "account_id": "A1320", "title": "Reciprocal wash-trading ring", "description": "Dense reciprocal transfers without shared identity.", "risk_focus": "Reciprocal-flow signal"},
+    {"id": "DEMO-04", "account_id": "A1330", "title": "Layered movement", "description": "Multi-hop movement ending in broker cash-out and merchant spend.", "risk_focus": "Layering and cash-out"},
+    {"id": "DEMO-05", "account_id": "A1340", "title": "Shared merchant look-alike", "description": "Unrelated accounts using the same popular merchant.", "risk_focus": "Avoid false positive"},
+    {"id": "DEMO-06", "account_id": "A1350", "title": "Ambiguous low-volume links", "description": "One shared device and one small transfer.", "risk_focus": "Calibrated uncertainty"},
+)
+SCENARIO_BY_ID = {scenario["id"]: scenario for scenario in SCENARIOS}
+
+
+def get_store(request: Request) -> InvestigationStore:
+    return request.app.state.investigations
+
+
+def _graph_health() -> dict[str, Any]:
+    return health_check(retries=0)
+
+
+def _serialize_result(result: Any) -> dict[str, Any]:
+    data = asdict(result)
+    return _json_safe(data)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _find_case_or_404(store: InvestigationStore, case_id: str) -> dict[str, Any]:
+    case = store.get(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Investigation case '{case_id}' was not found.")
+    return case
+
+
+def _case_summary(case: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "case_id": case["case_id"],
+        "account_id": case["account_id"],
+        "created_at": case["created_at"],
+        "status": case["status"],
+        "result": case["result"],
+        "approval": case.get("approval"),
+        "action": case.get("action"),
+        "graph_case_id": case.get("graph_case_id"),
+    }
+
+
+@app.get("/api/health", response_model=HealthResponse)
+def api_health() -> dict[str, str]:
+    return {"status": "ok", "service": "ringtrace-api"}
+
+
+@app.get("/api/graph/health")
+def graph_health() -> dict[str, Any]:
+    try:
+        result = _graph_health()
+    except Exception as exc:  # the liveness endpoint must return a diagnostic, not crash
+        logger.warning("Graph health probe failed: %s", exc)
+        return {"connected": False, "host": "unknown", "port": "unknown", "graph": "ringtrace", "error": str(exc)}
+    return result
+
+
+@app.get("/api/scenarios", response_model=list[Scenario])
+def scenarios() -> list[dict[str, str]]:
+    return list(SCENARIOS)
+
+
+@app.post("/api/investigate", response_model=InvestigationSummary, status_code=201)
+def investigate(
+    payload: InvestigationRequest,
+    store: InvestigationStore = Depends(get_store),
+) -> dict[str, Any]:
+    scenario = None
+    if payload.scenario_id:
+        scenario = SCENARIO_BY_ID.get(payload.scenario_id)
+        if scenario is None:
+            raise HTTPException(status_code=404, detail=f"Unknown scenario '{payload.scenario_id}'.")
+
+    target = payload.account_id or (scenario["account_id"] if scenario else None) or extract_account_id(payload.query or "")
+    if not target:
+        raise HTTPException(status_code=422, detail="Provide an account_id, scenario_id, or query containing an account ID.")
+
+    result = Investigator().investigate(account_id=target, query=payload.query or "")
+    result_data = _serialize_result(result)
+    if result.error:
+        message = result.error
+        if not result.graph_health.get("connected", False) or "unreachable" in message.lower():
+            raise HTTPException(status_code=503, detail=message)
+        raise HTTPException(status_code=422, detail=message)
+
+    steps = result_data.get("steps") or []
+    context_step = next((step for step in steps if step.get("tool") == "get_account_context"), None)
+    if context_step and not context_step.get("ok"):
+        if context_step.get("error") == "account_not_found":
+            raise HTTPException(status_code=404, detail=f"Account '{target}' does not exist in the current FalkorDB graph.")
+        raise HTTPException(status_code=422, detail=context_step.get("error") or context_step.get("summary"))
+    if not result_data.get("verdict"):
+        raise HTTPException(status_code=502, detail="The investigation engine returned no evidence-backed verdict.")
+
+    case = store.create(account_id=result.account_id or target, result=result_data)
+    return _case_summary(case)
+
+
+@app.get("/api/cases")
+def list_cases(store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    cases_by_id = {case["case_id"]: _case_summary(case) for case in store.list()}
+    graph_connected = False
+    try:
+        graph_health_result = _graph_health()
+        graph_connected = bool(graph_health_result.get("connected"))
+        if graph_connected:
+            rows = GraphStore(get_graph()).list_cases().data
+            for row in rows:
+                graph_case = row[0] if row else None
+                if not isinstance(graph_case, dict) or not graph_case.get("id"):
+                    continue
+                case_id = str(graph_case["id"])
+                cases_by_id.setdefault(case_id, {
+                    "case_id": case_id,
+                    "account_id": graph_case.get("account_id", ""),
+                    "created_at": str(graph_case.get("created_at", "")),
+                    "status": str(graph_case.get("status", "OPEN")).lower(),
+                    "result": {"verdict": graph_case.get("verdict"), "risk_score": graph_case.get("risk_score"), "recommended_action": graph_case.get("recommended_action")},
+                    "approval": None,
+                    "action": None,
+                    "graph_case_id": case_id,
+                })
+    except Exception as exc:  # list in-memory sessions even when FalkorDB is down
+        logger.info("Could not add durable graph cases to the API listing: %s", exc)
+    cases = list(cases_by_id.values())
+    cases.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return {"cases": cases, "total": len(cases), "graph_connected": graph_connected}
+
+
+@app.get("/api/cases/{case_id}")
+def get_case(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    case = store.get(case_id)
+    if case is not None:
+        return _case_summary(case)
+    # Cases written by the existing action layer are durable in FalkorDB and
+    # remain readable even if this process-local investigation index is gone.
+    try:
+        result = GraphStore(get_graph()).get_case(case_id)
+    except Exception:
+        result = None
+    if result and result.data:
+        return {"case_id": case_id, "graph_case": result.data[0][0], "source": "FalkorDB"}
+    raise HTTPException(status_code=404, detail=f"Case '{case_id}' was not found.")
+
+
+@app.get("/api/investigation/{case_id}")
+def get_investigation(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    return _case_summary(_find_case_or_404(store, case_id))
+
+
+@app.get("/api/investigation/{case_id}/graph")
+def get_investigation_graph(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    case = _find_case_or_404(store, case_id)
+    return build_graph_export(case["account_id"], case["result"].get("steps") or [])
+
+
+@app.get("/api/investigation/{case_id}/evidence")
+def get_investigation_evidence(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    case = _find_case_or_404(store, case_id)
+    evidence = []
+    for step in case["result"].get("steps") or []:
+        for item in step.get("evidence") or []:
+            evidence.append({"tool": step.get("tool"), "summary": step.get("summary"), **item})
+    if case.get("action"):
+        for step in case["action"].get("results") or []:
+            for item in step.get("evidence") or []:
+                evidence.append({"tool": step.get("tool"), "summary": step.get("summary"), **item})
+    return {"case_id": case_id, "evidence": evidence, "total": len(evidence)}
+
+
+@app.get("/api/investigation/{case_id}/trace")
+def get_investigation_trace(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    case = _find_case_or_404(store, case_id)
+    steps = case["result"].get("steps") or []
+    if case.get("action"):
+        steps = [*steps, *(case["action"].get("results") or [])]
+    return {"case_id": case_id, "mode": case["result"].get("mode"), "steps": steps, "total": len(steps)}
+
+
+@app.get("/api/investigation/{case_id}/risk")
+def get_investigation_risk(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    case = _find_case_or_404(store, case_id)
+    result = case["result"]
+    risk_step = next((step for step in reversed(result.get("steps") or []) if step.get("tool") == "calculate_risk_score" and step.get("ok")), None)
+    verdict = result.get("verdict") or {}
+    return {"case_id": case_id, "risk": (risk_step or {}).get("data", {}), "risk_score": verdict.get("risk_score"), "risk_class": verdict.get("risk_class"), "method": verdict.get("risk_method"), "evaluation_data": "Synthetic evaluation data"}
+
+
+@app.get("/api/investigation/{case_id}/decision")
+def get_investigation_decision(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    case = _find_case_or_404(store, case_id)
+    return {"case_id": case_id, "decision": case["result"].get("verdict") or {}}
+
+
+@app.post("/api/actions/{case_id}/approve", response_model=ActionApprovalResponse)
+def approve_action(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    try:
+        case = store.approve(case_id)
+    except CaseNotFound:
+        raise HTTPException(status_code=404, detail=f"Case '{case_id}' was not found.") from None
+    except InvalidCaseTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    verdict = case["result"].get("verdict") or {}
+    return {
+        "case_id": case_id,
+        "status": case["status"],
+        "approved_at": case["approval"]["approved_at"],
+        "recommended_action": verdict.get("recommended_action", "NO_ACTION_REQUIRED"),
+        "simulated": True,
+    }
+
+
+def _execute_graph_action(case: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, str]:
+    graph = get_graph()
+    context = ToolContext(graph_store=GraphStore(graph), risk_scorer=RiskScorer())
+    context.evidence_trail.extend(case["result"].get("steps") or [])
+    verdict = case["result"].get("verdict") or {}
+    results = execute_recommended_action(context, case["account_id"], verdict)
+    graph_case_id = next(
+        (entry.get("data", {}).get("case_id") for entry in results
+         if entry.get("tool") == "create_investigation_case" and entry.get("ok")),
+        None,
+    )
+    failed = [entry for entry in results if not entry.get("ok")]
+    if failed:
+        raise RuntimeError("Simulated graph action failed: " + "; ".join(entry.get("summary", "unknown error") for entry in failed))
+    if not graph_case_id:
+        raise RuntimeError("The action engine did not return a persisted FalkorDB case ID.")
+    return results, graph_case_id, "written"
+
+
+@app.post("/api/actions/{case_id}/execute", response_model=ActionExecutionResponse)
+def execute_action(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+    try:
+        case = store.begin_execution(case_id)
+    except CaseNotFound:
+        raise HTTPException(status_code=404, detail=f"Case '{case_id}' was not found.") from None
+    except InvalidCaseTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    try:
+        results, graph_case_id, write_status = _execute_graph_action(case)
+    except Exception as exc:  # the write may have partially succeeded; repeat is deliberately blocked
+        logger.exception("Action execution failed for %s", case_id)
+        store.fail_execution(case_id, str(exc))
+        raise HTTPException(status_code=502, detail=f"Action execution failed; inspect FalkorDB before any manual retry: {exc}") from exc
+
+    complete = store.complete_execution(
+        case_id,
+        results=results,
+        graph_case_id=graph_case_id,
+        graph_write_status=write_status,
+    )
+    verdict = complete["result"].get("verdict") or {}
+    action = complete["action"]
+    return {
+        "case_id": case_id,
+        "status": complete["status"],
+        "executed_at": action["executed_at"],
+        "action": verdict.get("recommended_action", "NO_ACTION_REQUIRED"),
+        "graph_case_id": graph_case_id,
+        "graph_write_status": write_status,
+        "results": action.get("results", []),
+        "simulated": True,
+    }
+
+
+@app.get("/")
+def root() -> Any:
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    return {"service": "RingTrace API", "frontend": "not built", "docs": "/docs"}
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str) -> Any:
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API route not found.")
+    dist = FRONTEND_DIST.resolve()
+    requested = (dist / full_path).resolve()
+    if requested.is_relative_to(dist) and requested.is_file():
+        return FileResponse(requested)
+    index = dist / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    raise HTTPException(status_code=404, detail="Frontend has not been built.")
