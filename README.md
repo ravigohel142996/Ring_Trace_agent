@@ -62,9 +62,9 @@ built in** (`CALL algo.WCC(...)`, `CALL algo.pageRank(...)`) and speaks
 (graph + "cache" + pub/sub if needed later) is one lightweight service — a
 good fit for a hackathon MVP that still "looks production-capable."
 
-**FalkorDB is not a visualization layer in RingTrace. It is the live context
-layer the agent queries to investigate relationships, select investigative
-tools, form evidence-backed conclusions, and trigger actions.**
+**FalkorDB is not merely used to visualize RingTrace relationships. It is the
+live graph context layer used by the agent to investigate connected evidence,
+make decisions, and trigger actions.**
 
 Every tool the agent calls (`find_fraud_ring`, `rank_ring_leaders`,
 `trace_money_path`, `find_identity_links`, `calculate_risk_score`) issues
@@ -124,10 +124,10 @@ built so that claim is falsifiable, not aspirational:
                                       └─────────────────┬──────────────┘
                                                          │
                  ┌───────────────────────────────────────▼─────────────┐
-                 │ app/dashboard.py (Streamlit) — "Why This Action?"    │
-                 │ centerpiece + sections A-G                           │
-                 │ tools/actions.py — simulated case/flag/escalate/     │
-                 │ watchlist actions + 2nd-order evidence graph writes  │
+                 │ FastAPI `api/main.py` — REST API + SPA on :8000     │
+                 │ React/Vite `frontend/` + native SVG graph renderer  │
+                 │ `/api/*` and client routes share one public origin │
+                 │ legacy Streamlit baseline remains in `app/`         │
                  └───────────────────────────────────────────────────────┘
 ```
 
@@ -169,9 +169,11 @@ Indexes are created on every `.id` property plus a few hot filter fields
 
 ### Sample Cypher — inspect the graph yourself
 
-Run these directly in `redis-cli` (`GRAPH.QUERY ringtrace "..."`), the
-FalkorDB Browser UI (`http://localhost:3000` when running via Docker), or
+Run these directly with `redis-cli` (`GRAPH.QUERY ringtrace "..."`), an
+optionally exposed FalkorDB Browser UI, or
 `python -c "from graph.connection import get_graph; print(get_graph().query('...').result_set)"`.
+The default Compose setup keeps FalkorDB private; the judge-facing app is
+available at one URL on port 8000.
 
 ```cypher
 // Ring members of the Case C demo ring
@@ -453,10 +455,11 @@ confidence, action}`:
 
 This means "why did RingTrace take this action?" is not just a UI panel —
 it's a literal, queryable graph fact (see the sample Cypher in
-[Section 6](#6-graph-schema)). The dashboard surfaces this as a dedicated
-**"🔍 Why This Action?"** tab (first tab, shown immediately after running an
-investigation): GRAPH FACTS → TOOL CALLS → EVIDENCE → RISK → DECISION →
-ACTION, all read directly from the evidence trail — nothing re-derived.
+[Section 6](#6-graph-schema)). The React investigation workspace surfaces
+the provenance panel and evidence ledger alongside the native SVG graph,
+agent trace, and a confirmation-based simulated Action Center. GRAPH FACTS
+→ TOOL CALLS → EVIDENCE → RISK → DECISION → ACTION are rendered from the
+actual API result and tool evidence, not fabricated or re-derived.
 
 ## 13. Demo scenarios
 
@@ -466,7 +469,7 @@ ACTION, all read directly from the evidence trail — nothing re-derived.
 |---|---|---|---|---|
 | `A1100` | **A — isolated** | 1 linked account, no shared devices/IPs, no alerts | **LOW** | `NO_ACTION_REQUIRED` |
 | `A1200` | **B — identity-linked only** | 5-account component, 4 share an IP, no money trail | **HIGH** | `FLAG_AND_REQUEST_MANUAL_REVIEW` |
-| `A1027` | **C — ring + money flow** | 9-account component, shared device (7 accts), PageRank leader `A1001`, 5-hop money trail, pre-existing alert, leader spends mixer proceeds at a real merchant | **CRITICAL** | `ESCALATE_FOR_MANUAL_INVESTIGATION` |
+| `A1027` | **C — ring + money flow** | 9-account component, shared device (7 accts), PageRank leader `A1001`, 5-hop money trail, pre-existing alert, leader spends mixer proceeds at a synthetic merchant | **CRITICAL** | `ESCALATE_FOR_MANUAL_INVESTIGATION` |
 
 Identical decision logic run against three different graph neighborhoods
 produces three genuinely different outcomes — asserted directly in
@@ -482,7 +485,7 @@ deliberate **benign look-alikes** that a naive detector would wrongly flag:
 | `DEMO-01` | `A1300` | Trivial clean/isolated account — sanity check for LOW. |
 | `DEMO-02` | `A1310`/`A1311` | **Benign**: shared device, zero money movement (e.g. household). Must NOT escalate on identity-link alone. |
 | `DEMO-03` | `A1320`-`A1323` | Reciprocal wash-trading ring — dense back-and-forth money flow, **no shared identity at all**. Tests the reciprocal-transfer signal specifically. |
-| `DEMO-04` | `A1330`→`A1331`→`A1332` | Full layered-movement chain ending in a broker cash-out **and a real merchant purchase**. |
+| `DEMO-04` | `A1330`→`A1331`→`A1332` | Full layered-movement chain ending in a broker cash-out **and a synthetic merchant purchase**. |
 | `DEMO-05` | `A1340`/`A1341` | **Benign**: two unrelated accounts who happen to shop at the same popular merchant. Must NOT be treated as a ring signal. |
 | `DEMO-06` | `A1350`/`A1351` | Genuinely **ambiguous** — one shared device, one small transfer, nothing else. A well-calibrated agent should land on a measured verdict, not an overconfident one. |
 
@@ -492,91 +495,83 @@ performs on all of the above, measured against synthetic ground truth.
 
 ## 14. Screenshots
 
-**Honest disclosure:** this project was engineered in a sandboxed
-environment with no root/sudo (so `apt-get install chromium` fails), no
-Docker/Podman, and blocked outbound access to the Playwright/Chromium CDN
-— meaning a real browser could not be installed to capture real
-screenshots. Rather than fabricate screenshots (explicitly against this
-project's engineering rules), none are embedded in this README.
-
-What IS real and verifiable right now: **the dashboard runs** (see
-[Setup](#15-setup)) — `streamlit run app/dashboard.py` serves a fully
-interactive UI you can click through yourself in under a minute.
-
-For anyone with normal network access (a laptop, a CI runner), a
-reproducible capture script is provided:
-
-```bash
-pip install playwright && playwright install chromium
-streamlit run app/dashboard.py --server.address 0.0.0.0 --server.port 8501 &
-python scripts/capture_screenshots.py --base-url http://localhost:8501
-```
-
-This writes real screenshots of the running app (investigation input, the
-"Why This Action?" panel, the agent trace, graph view, risk panel, evidence,
-and final decision) to `docs/screenshots/`.
+No screenshots are bundled; mockups are not presented as real captures.
+The production React interface is served by FastAPI on port `8000`; its root,
+client-side routes, built JS/CSS assets, and live `/api/*` endpoints have
+been smoke-tested against the seeded FalkorDB graph. Use the setup below to
+open the actual running workspace. The existing screenshot helper targets
+the preserved Streamlit baseline and is not a React browser-test harness.
 
 ## 15. Setup
 
 ### Option A — Docker (recommended)
 
 ```bash
-cp .env.example .env     # optionally add an LLM key; works fine without one
+cp .env.example .env     # optional; the rule-based agent needs no LLM key
 docker compose up --build
 ```
 
-See [Section 16](#16-docker) for what has and hasn't been verified about
-this path in this specific environment.
+Open **http://localhost:8000**. FastAPI serves both the React SPA and its
+`/api/*` routes on this single URL; FalkorDB stays private inside the Compose
+network. On first startup, the app loads the synthetic demo graph and trains
+the risk model if the graph is empty.
 
-### Option B — Local Python
+### Option B — Local development
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+npm --prefix frontend ci
+npm --prefix frontend run build
 
-./scripts/setup_falkordb_local.sh      # starts FalkorDB via Docker, or see
-                                        # the script's fallback instructions
+./scripts/setup_falkordb_local.sh      # starts FalkorDB via Docker if available
 ./scripts/run_pipeline.sh              # generate data + load graph + train model
-
-streamlit run app/dashboard.py --server.address 0.0.0.0 --server.port 8501
+uvicorn api.main:app --env-file .env --host 0.0.0.0 --port 8000
 ```
 
-This exact Option-B path (building FalkorDB + the FalkorDB module from
-source, no Docker, no root) was independently reproduced **four separate
-times** during this project's engineering, with bit-for-bit identical
-results each time (same node/edge counts, same test pass rate, same
-LOW/HIGH/CRITICAL verdicts) — see `docs/STATUS.md` for the build log.
+Open **http://localhost:8000**. If Docker is unavailable, point
+`FALKORDB_HOST`/`FALKORDB_PORT` in `.env` at a reachable FalkorDB service
+instead of running the local-DB helper.
+
+For development without a build, run these in separate terminals:
+
+```bash
+uvicorn api.main:app --env-file .env --host 0.0.0.0 --port 8000
+npm --prefix frontend run dev
+```
+
+Vite proxies `/api` to FastAPI; open **http://localhost:5173** while using
+the development server. The original Streamlit implementation remains
+available separately with `streamlit run app/dashboard.py
+--server.address 0.0.0.0 --server.port 8501`.
+
+All scenarios are synthetic. `A1027` is a deterministic seeded demo account,
+not a real customer or fraud allegation.
 
 ## 16. Docker
 
-`docker-compose.yml` + `docker/Dockerfile` + `docker/entrypoint.sh` define a
-two-service stack: `falkordb` (official image, healthchecked) and
-`ringtrace` (this app, waits for FalkorDB, runs the ingestion+training
-pipeline on first boot if the graph is empty, then launches Streamlit).
+The Compose stack contains two services: `falkordb` (healthchecked and
+private to the Compose network) and `ringtrace`. The multi-stage Dockerfile
+builds the Vite frontend with Node, copies the production assets into the
+Python image, and serves them together with FastAPI. On first startup, the
+entrypoint seeds the synthetic graph and trains the model if the graph is
+empty.
 
-**Honest disclosure:** the sandbox this project was engineered in has no
-Docker/Podman binary at all (not just inaccessible — not installed, and it
-cannot be installed without root). `docker compose up --build` has
-therefore **not been run end-to-end in this environment**. What WAS
-validated here, statically:
+```bash
+docker compose up --build
+```
 
-- `docker-compose.yml` parses as valid YAML, with the expected two services,
-  correct port mappings (`6379`, `3000` for FalkorDB; `8501` for the app),
-  and a healthcheck gate so the app waits for FalkorDB to actually be ready.
-- `docker/entrypoint.sh` passes `bash -n` syntax validation, and its logic
-  (wait-for-FalkorDB loop, conditional pipeline run, `exec streamlit run
-  ...`) was manually traced against the already-proven-working local Python
-  pipeline (Option B above), which exercises the exact same
-  `ingestion.load_to_falkordb` → `models.train` → `streamlit run` sequence.
-- `requirements.txt` installs cleanly (confirmed 4 times in this session) —
-  the same file `docker/Dockerfile` installs via `pip install -r
-  requirements.txt`.
+The only published application port is **8000** (`http://localhost:8000`).
+Redis/FalkorDB and its optional browser UI are not published to the host by
+default, so the judge-facing app has one URL.
 
-If you have Docker available, `docker compose up --build` is the fastest
-path to a running demo and should work as-is; please file an issue if it
-doesn't — this is the one part of the stack that could not be fully
-verified in-environment, and that's stated here rather than glossed over.
+**Honest disclosure:** Docker/Podman is not installed in this sandbox, so a
+container build/run has not been performed here. The Compose YAML, entrypoint
+shell syntax, production API, SPA routes/assets, graph-backed A1027
+investigation, and graph write-back were validated separately in the local
+environment. Validate the actual image with `docker compose up --build` on a
+host with Docker before deployment.
 
 ## 17. Environment variables
 
@@ -586,6 +581,7 @@ See `.env.example` for the full annotated list. Highlights:
 |---|---|---|
 | `FALKORDB_HOST` / `FALKORDB_PORT` | Where to reach FalkorDB | `localhost:6379` |
 | `FALKORDB_GRAPH` | Graph name | `ringtrace` |
+| `FALKORDB_USERNAME` / `FALKORDB_PASSWORD` | Optional graph authentication | _(empty)_ |
 | `LLM_PROVIDER` | `none` \| `groq` \| `openai` | `none` (rule-based fallback) |
 | `LLM_API_KEY` | API key — **never hardcoded**, read from env only | _(empty)_ |
 | `LLM_BASE_URL`, `LLM_MODEL` | OpenAI-compatible endpoint + model | Groq `llama-3.3-70b-versatile` |
@@ -594,31 +590,34 @@ See `.env.example` for the full annotated list. Highlights:
 
 ## 18. Testing
 
+Build the frontend and run the repository's explicit test directory (this
+checkout also contains ignored upstream FalkorDB source under `bin/`):
+
 ```bash
-pip install -r requirements.txt   # includes pytest
-PYTHONPATH=. pytest tests/ -v
+npm --prefix frontend ci
+npm --prefix frontend run build
+PYTHONPATH=. pytest tests/ -q
 ```
 
-**30 tests, all passing**, across five files:
+**65 tests pass when FalkorDB is running with the synthetic demo graph**;
+24 graph-dependent cases are skipped cleanly when no graph is available.
+Current coverage is split across:
 
-- `test_tools.py` (10) — every required tool returns a `ToolResult`, never
-  raises; known-account contract checks; invalid-input handling.
-- `test_decision.py` (4) — the 3-case decision-divergence test (LOW / HIGH /
-  CRITICAL from identical rule logic, different graphs).
-- `test_risk_scorer.py` (3) — unit tests for the graph-evidence guardrail
-  (no FalkorDB required).
-- `test_llm_loop_mocked.py` (3) — **the LLM tool-calling loop**, exercised
-  against a scripted fake OpenAI-compatible client (no live API key is
-  available in this environment): a full scripted investigation reaching
-  `generate_verdict`, a max-iterations guard against a pathological
-  never-stopping model, and rejection of a disallowed (action-category)
-  tool call.
-- `test_integration_falkordb.py` (10, new) — connection-failure handling,
-  schema-setup idempotency, the guardrail firing end-to-end through the live
-  scorer (not just the unit-level function), the full action write actually
-  landing in FalkorDB (`HAS_CASE`/`SUPPORTED_BY`/`RESULTED_IN`/
-  `TRIGGERED_BY` all verified present), malformed-input handling, and the
-  LLM-unavailable → rule-based fallback path.
+- `test_api.py` (35) — FastAPI contracts, investigation/result routes,
+  graph/evidence/trace exports, simulated approval/execution transitions,
+  built SPA routes/assets, and API fallbacks.
+- `test_tools.py` (10) and `test_decision.py` (4) — graph tools, known
+  scenarios, and LOW/HIGH/CRITICAL outcomes from different graph structures.
+- `test_integration_falkordb.py` (10) — real graph schema, graph-evidence
+  guardrails, investigation fallback, and the persisted second-order action
+  trail (`HAS_CASE`, `SUPPORTED_BY`, `RESULTED_IN`, `TRIGGERED_BY`).
+- `test_risk_scorer.py` (3) — unit coverage for graph-evidence guardrails.
+- `test_llm_loop_mocked.py` (3) — scripted LLM tool-calling loop, iteration
+  guard, and disallowed-action-tool rejection; no live LLM key required.
+
+The production smoke check also verified FastAPI-served `/`, `/cases`,
+`/risk`, `/graph`, built JS/CSS assets, `/api/health`, live FalkorDB health,
+a real A1027 agent investigation, and a confirmed simulated graph write.
 
 ## 19. Evaluation
 
@@ -673,14 +672,13 @@ runs a full investigation per sampled account).
   evidence of its own may legitimately score LOW despite being ground-truth
   fraud — an intentional guardrail tradeoff against guilt-by-association,
   reported honestly in the evaluation output rather than tuned away.
-- No real browser/screenshot tooling or Docker daemon was available in the
-  environment this was engineered in — see [Sections 14](#14-screenshots)
-  and [16](#16-docker) for exactly what was and wasn't verified, and the
-  reproducible paths provided for anyone to verify the rest.
-- No persistence/auth layer for the dashboard itself — it's a single-user
-  investigator tool, as scoped for the hackathon. Multi-tenant case
-  management, auth, and a CI pipeline were explicitly deprioritized for this
-  submission in favor of P0/P1 correctness and stability.
+- The production routes and built assets have been HTTP-smoke-tested, but
+  no browser screenshot is bundled and the Docker image has not been built
+  in this sandbox (Docker is not installed); see [Sections 14](#14-screenshots)
+  and [16](#16-docker).
+- The API's active investigation index is process-local; action/evidence
+  writes are durable in FalkorDB, but there is no user authentication or
+  multi-tenant case-management layer. This remains a single-investigator demo.
 
 ## 21. Future roadmap
 
@@ -705,20 +703,22 @@ runs a full investigation per sampled account).
 
 ```
 ringtrace/
-├── app/            Streamlit dashboard + graph visualization
+├── api/            FastAPI routes, request models, graph export, case/action state
+├── frontend/       React + TypeScript + Vite SPA; native SVG investigation graph
+├── app/            Preserved original Streamlit dashboard and graph visualization
 ├── agent/          Reasoning loop, LLM wrapper, rule-based planner, decision engine, reports
 ├── tools/          MCP-style tool layer (investigation + action tools), registry, context
 ├── graph/          FalkorDB connection, schema/indexes, Cypher query layer
-├── models/         Graph feature extraction, RandomForest training, explainable risk scorer
+├── models/         Graph features, RandomForest training, explainable risk scorer
 ├── ingestion/      Synthetic data generator + FalkorDB loader
-├── data/           raw/ (generated CSVs) + processed/ (ground_truth.csv, eval-only)
-├── evaluation/     Classifier metrics + full-pipeline investigation metrics (both disclaimed)
+├── data/           Generated CSVs + evaluation-only synthetic ground truth
+├── evaluation/     Classifier metrics + full-pipeline investigation metrics
 ├── reports/        Generated case reports (git-ignored)
-├── tests/          pytest suite (30 tests: tools, decision, risk-scorer, mocked LLM, integration)
-├── scripts/        setup_falkordb_local.sh, run_pipeline.sh, capture_screenshots.py
-├── docker/         Dockerfile, entrypoint.sh
-├── docs/           DEMO_SCRIPT.md, STATUS.md, screenshots/ (see Section 14)
-├── docker-compose.yml
+├── tests/          65 tests across API, tools, decisions, scoring, and graph integration
+├── scripts/        FalkorDB setup, pipeline, and legacy Streamlit screenshot helper
+├── docker/         Multi-stage frontend build, FastAPI runtime entrypoint
+├── docs/           Demo script, status notes, and project documentation
+├── docker-compose.yml  Private FalkorDB + single-port RingTrace app
 ├── requirements.txt
 └── .env.example
 ```

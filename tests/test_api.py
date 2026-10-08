@@ -122,6 +122,26 @@ def test_root_serves_frontend_when_built_and_api_fallback_otherwise(client):
         assert response.json()["service"] == "RingTrace API"
 
 
+@pytest.mark.parametrize("path", ["/cases", "/risk", "/graph", "/investigate/RT-DEMO"])
+def test_spa_client_routes_serve_index(client, path):
+    if not api_main.FRONTEND_DIST.joinpath("index.html").is_file():
+        pytest.skip("frontend has not been built")
+    response = client.get(path)
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "<div id=\"root\"></div>" in response.text
+
+
+def test_spa_serves_compiled_frontend_asset(client):
+    assets_dir = api_main.FRONTEND_DIST / "assets"
+    assets = sorted(assets_dir.glob("*.js"))
+    if not assets:
+        pytest.skip("frontend has not been built")
+    response = client.get(f"/assets/{assets[0].name}")
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+
+
 def test_graph_health_returns_connection_state(client, monkeypatch):
     monkeypatch.setattr(api_main, "_graph_health", lambda: {"connected": True, "host": "db", "port": "6379", "graph": "ringtrace", "error": None})
     assert client.get("/api/graph/health").json()["connected"] is True
@@ -206,8 +226,10 @@ def test_empty_engine_verdict_returns_502(client, monkeypatch):
 def test_cases_list_and_case_retrieval(client, monkeypatch):
     case = create_case(client, monkeypatch)
     listing = client.get("/api/cases").json()
-    assert listing["total"] == 1
-    assert listing["cases"][0]["case_id"] == case["case_id"]
+    # The endpoint also includes durable FalkorDB action cases from earlier
+    # investigations, so assert presence rather than assuming an empty graph.
+    assert listing["total"] >= 1
+    assert any(item["case_id"] == case["case_id"] for item in listing["cases"])
     assert client.get(f"/api/cases/{case['case_id']}").json()["account_id"] == "A1027"
 
 

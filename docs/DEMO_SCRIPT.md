@@ -2,167 +2,134 @@
 
 **Tagline:** *Follow the graph. Trace the money. Expose the ring.*
 
-This is the exact script used to demo RingTrace to Track 01 judges
-("Agents That Act on Connected Data"). It follows ONE alert end-to-end and
-narrates each screen so the causal chain
+This walkthrough uses the React/Vite investigation workspace served by
+FastAPI. It follows a deterministic **synthetic** A1027 demo account from
+live FalkorDB graph queries to a human-approved, explicitly confirmed
+simulated action. No real person, account, payment, or financial system is
+involved.
 
+```text
+FALKORDB GRAPH → AGENT TOOL TRACE → EVIDENCE → RISK DECISION → APPROVED SIMULATED ACTION
 ```
-GRAPH CONTEXT → GRAPH TOOL → AGENT DECISION → INVESTIGATION ACTION → EVIDENCE
-```
-
-is impossible to miss. Total runtime: ~4 minutes if read at a natural pace.
-
----
 
 ## 0. Setup (before judges arrive)
 
 ```bash
-docker compose up --build        # or: see README "Setup" section for the
-                                  # local-Python fallback path
+docker compose up --build
 ```
 
-Open the dashboard, leave it on the **Investigation Input** screen with
-nothing run yet.
+Open **http://localhost:8000**. The app and `/api/*` endpoints share this one
+URL; FalkorDB remains private inside the Compose network. On an empty graph,
+the entrypoint loads the synthetic dataset and trains the risk model.
+
+For a local setup without Docker, follow the local-development instructions
+in the README. Confirm the graph health indicator is connected, select
+`CASE-C · Ring with money flow`, and leave the account as `A1027`.
 
 ## 1. The hook (20s)
 
-> "Fraud rings don't look suspicious one row at a time. A single account, a
-> single transaction — nothing's wrong. What gives a ring away is
-> *structure*. RingTrace is an agent that investigates by walking a graph,
-> not by guessing from a prompt. Watch what happens when I give it one
-> alert."
+> “Fraud rings don't look suspicious one row at a time. What gives one away
+> is structure: shared devices, connected accounts, and a trail of money.
+> RingTrace asks FalkorDB for that connected context, then shows every tool
+> result behind its decision. All data in this demo is synthetic.”
 
-Type `A1027` into **Account / Alert ID** (or pick the "Case C" preset) and
-click **Run Investigation**.
+Use the preselected `CASE-C` scenario and click **Run investigation**.
 
-## 2. Graph context (30s)
+## 2. Live graph context and tool trace (40s)
 
-While it runs:
+> “The first step is `get_account_context`: the agent queries the live graph
+> for this account's owner, devices, alerts, transfers, and neighboring
+> entities. The later steps are not prewritten results. They are tool calls
+> made against the graph that was just loaded for this demo.”
 
-> "The agent's first move is never a guess — it's a real Cypher query
-> against FalkorDB: `get_account_context`. It pulls the account's owner,
-> devices, IPs, brokers, alerts, and direct transfers. That's the only
-> 'free' information it gets. Everything else, it has to go find."
+Point to the **Agent Trace** and **Evidence Ledger**. With the default seed,
+the rule-based investigator returns seven successful tool steps:
 
-Open the **B. Agent Trace** tab, expand the first step, point at the raw
-JSON: this is a real tool call, real data, not canned text.
+- `get_account_context`
+- `find_fraud_ring`
+- `rank_ring_leaders`
+- `trace_money_path`
+- `find_identity_links`
+- `calculate_risk_score`
+- `generate_verdict`
 
-## 3. Ring detection — FalkorDB's own algorithm (40s)
+The agent uses the deterministic rule-based planner by default; an LLM key
+is optional. The page displays the actual tool outputs and captured Cypher
+provenance, not fabricated result cards.
 
-> "Next it asks: is this account part of something bigger? That's
-> `find_fraud_ring`, and under the hood it's calling FalkorDB's built-in
-> `algo.WCC` — Weakly Connected Components — over the identity-resolution
-> graph. Not a Python loop joining tables. A graph-native algorithm."
+## 3. FalkorDB algorithms and relationships (45s)
 
-Point at the result: a 9-account component. Then:
+> “`find_fraud_ring` runs FalkorDB's WCC graph algorithm over materialized
+> `LINKED_TO` edges. `rank_ring_leaders` uses PageRank on money-flow
+> relationships. RingTrace doesn't approximate these graph operations in
+> the browser.”
 
-> "But component size alone is a weak signal — a loosely-connected group of
-> 9 strangers isn't a ring. So RingTrace computes a **composite ring
-> score**: shared-device density, shared-IP density, reciprocal transfers,
-> broker concentration, PageRank concentration, transaction velocity — nine
-> independent graph signals, each one its own auditable Cypher query. For
-> this account: ring score 0.43, confidence 0.89 — nearly every signal type
-> fired."
+Point to the graph panel, which is rendered as native SVG from the API's
+investigation graph payload. With the default synthetic dataset, A1027 is
+in a nine-account component, shares a device with seven other accounts,
+and the PageRank leader is `A1001`.
 
-## 4. Ring leader — PageRank, not a heuristic (30s)
+> “Then `trace_money_path` returns the five-hop path
+> A1027 → A1023 → A1024 → A1025 → A1026 → A1001. The graph view, path, and
+> account counts are all derived from FalkorDB results.”
 
-> "Now: who's running it? `rank_ring_leaders` calls FalkorDB's
-> `algo.pageRank` over the directed money-flow graph. The account that
-> *accumulates* money from the rest of the ring rises to the top — zero
-> hand-tuned rules."
+Use graph pan/zoom, filters, node selection, fit, or reset to inspect the
+returned neighborhood.
 
-Point at the result: **A1001**, PageRank score shown.
+## 4. Risk and the evidence-backed decision (40s)
 
-## 5. The money trail (30s)
+> “The risk model consumes graph-derived features, and the guardrail limits
+> scores that lack corroborating graph evidence. On this seeded A1027 graph,
+> the live investigation returned a CRITICAL score of 0.9852, a 0.95
+> confidence verdict, and `ESCALATE_FOR_MANUAL_INVESTIGATION`.”
 
-> "`trace_money_path` finds the exact route: a 5-hop chain,
-> A1027 → A1023 → A1024 → A1025 → A1026 → A1001, with timestamps and
-> amounts on every hop. Then A1001 cashes out through a crypto mixer broker
-> — and spends part of it at a real merchant. That whole narrative —
-> Account → Account → ... → Broker → Account (self) → Merchant — only
-> exists because the graph has Merchant/TO_MERCHANT edges, not just
-> abstract transfers."
+Show the **Why This Action?** provenance panel. It links graph facts, the
+successful tool calls, evidence, risk, verdict, and recommendation. The
+five-hop flow, nine-account component, existing alert, and leader ranking
+are visible in the agent result. Remind judges that the trained model and
+its evaluation data are synthetic and are not evidence of real-world fraud
+accuracy.
 
-Open **C. Graph View**: the red path is the traced money flow.
+## 5. Human approval and confirmed simulated write-back (40s)
 
-## 6. Identity links — why these accounts are connected (20s)
+In **Action Center**, point out the **SIMULATED ACTION** label and the
+explanation that no financial system is modified.
 
-> "`find_identity_links` confirms this isn't coincidence: 7 of these
-> accounts share one physical device, 3 share an IP. That's why WCC
-> grouped them — not an arbitrary graph artifact."
+> “The recommendation cannot execute silently. First an investigator
+> approves it. The execution button then opens a final review dialog showing
+> the action and graph write. I must explicitly confirm that dialog.”
 
-## 7. Risk score + the guardrail (30s)
+Click **Approve recommendation**, then **Execute simulated action**, review
+the dialog, and click **Confirm simulated execution**. The existing
+RingTrace action tools write a case and supporting evidence to the demo
+FalkorDB graph. The UI shows the returned graph case ID and write status.
 
-Open **D. Risk**:
+> “This is a real graph write to the local synthetic investigation graph,
+> but it does not flag a real account or contact a payment system. The
+> `HAS_CASE`, `SUPPORTED_BY`, `RESULTED_IN`, and `TRIGGERED_BY` links let us
+> query why the simulated action was recorded.”
 
-> "The ML risk scorer reads these graph features and predicts 0.98 —
-> CRITICAL. But notice the panel shows BOTH the raw model score and a
-> graph-adjusted score. RingTrace never lets a model's number stand alone —
-> a guardrail checks the graph evidence itself and will CAP the score if the
-> graph doesn't actually corroborate it. Here it doesn't need to: the
-> evidence is real."
+## 6. Contrast cases and close (30s)
 
-## 8. The decision — and WHY (40s) ← the centerpiece
+Optionally investigate `A1100` (isolated) and `A1200` (identity-linked
+without the A1027 money trail) to show that the same engine can produce
+lower-severity outcomes for different graph neighborhoods.
 
-Open the **🔍 Why This Action?** tab (first tab):
+Close with:
 
-> "This is the panel that matters most to a judge. Six boxes, one causal
-> chain: GRAPH FACTS → TOOL CALLS → EVIDENCE → RISK → DECISION → ACTION.
-> Every number in the GRAPH FACTS box is a live Cypher/algo result. Remove
-> FalkorDB, and there is no ring score, no leader, no money path — there is
-> no decision. That's the banner at the top: **'Without FalkorDB, this
-> decision could not have been made.'** It's not a slogan — it's literally
-> true of this architecture."
-
-## 9. The action — graph write-back (30s)
-
-Go to **F. Decision**, click **Execute recommended action**:
-
-> "RingTrace doesn't just print a verdict — it acts. Watch: a `Case` node
-> gets created, linked to the account via `HAS_CASE`. The account gets
-> flagged, marked high-risk, sent to manual review, and the case escalated.
-> And — this is the part most agent demos skip — every one of those actions
-> is linked back to the exact graph finding that triggered it:
-> `(Case)-[:RESULTED_IN]->(Action)-[:TRIGGERED_BY]->(GraphFinding)`. You can
-> literally query 'why did this action happen' and get a graph answer, not
-> a log line."
-
-(Optional, if a judge wants to see it in the raw graph — see README
-"Sample Cypher queries":)
-
-```cypher
-MATCH (c:Case)-[:RESULTED_IN]->(ac:Action)-[:TRIGGERED_BY]->(gf:GraphFinding)
-WHERE c.account_id = 'A1027'
-RETURN ac.action_type, gf.summary
-```
-
-## 10. Contrast — the same logic, different graph (30s)
-
-> "One more thing, and this is the test we built the whole decision engine
-> against: run the IDENTICAL rule logic against a different account with a
-> different graph neighborhood, and the verdict changes."
-
-Switch the preset to **Case A — A1100** (isolated) and **Case B — A1200**
-(shared IP, no money) and re-run. Point at: LOW / `NO_ACTION_REQUIRED` for
-A1100, HIGH / `FLAG_AND_REQUEST_MANUAL_REVIEW` for A1200.
-
-> "Same code path. Three different graphs. Three genuinely different
-> verdicts — asserted directly in `tests/test_decision.py`."
-
-## 11. Close (10s)
-
-> "FalkorDB is not a visualization layer in RingTrace. It is the live
-> context layer the agent queries to investigate relationships, select
-> investigative tools, form evidence-backed conclusions, and trigger
-> actions. Follow the graph. Trace the money. Expose the ring."
+> “FalkorDB is not merely used to visualize RingTrace relationships. It is
+the live graph context layer used by the agent to investigate connected
+evidence, make decisions, and trigger actions. Follow the graph. Trace the
+money. Expose the ring.”
 
 ---
 
-## If you have extra time: the DEMO-02 / DEMO-05 "don't cry wolf" cases
+## Before presenting
 
-Run `A1310` (two accounts sharing a device, zero money movement — a
-household, not a ring) and `A1340` (two strangers who happen to shop at the
-same online retailer). Both correctly land on **LOW** — proof the composite
-ring score and the ML guardrail don't flag every coincidental signal as
-fraud. A detector that flags everything is as useless as one that flags
-nothing; this demonstrates calibration, not just sensitivity.
+- Ensure `/api/graph/health` reports `connected: true` and the graph has the
+  synthetic seed data. `python -m ingestion.load_to_falkordb` reloads the
+  deterministic demo plus generated synthetic population.
+- The first simulated execution writes graph records. Re-seed the demo graph
+  before a fresh run if a clean action ledger is desired.
+- Do not describe synthetic A1027 records as real customer data or a real
+  fraud finding.

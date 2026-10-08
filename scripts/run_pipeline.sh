@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# RingTrace — full pipeline: generate synthetic data -> load into FalkorDB
-# -> train the explainable risk model -> print a sanity-check summary.
+# RingTrace — generate the synthetic graph and train the explainable risk model.
 #
 # Usage:
 #   ./scripts/run_pipeline.sh
@@ -20,5 +19,10 @@ python -m ingestion.load_to_falkordb
 echo "[2/3] Training the explainable risk model on graph-derived features..."
 python -m models.train
 
-echo "[3/3] Done. Launch the dashboard with:"
-echo "    streamlit run app/dashboard.py --server.address 0.0.0.0 --server.port 8501"
+echo "[3/3] Done. Build the frontend, then launch the single-port app with:"
+echo "    npm --prefix frontend ci && npm --prefix frontend run build"
+if [ -f .env ]; then
+  echo "    uvicorn api.main:app --env-file .env --host 0.0.0.0 --port 8000"
+else
+  echo "    uvicorn api.main:app --host 0.0.0.0 --port 8000"
+fi

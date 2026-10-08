@@ -2,11 +2,10 @@
 # RingTrace — start a local FalkorDB instance for development.
 #
 # Preferred path: Docker (works everywhere, zero native build issues).
-# This script starts a single FalkorDB container with the default demo
-# settings used by RingTrace (.env.example). For the full stack (FalkorDB +
-# the Streamlit dashboard together) use `docker compose up` instead — this
-# script is just a fast way to get *only* the database running while you
-# iterate on Python code locally with `streamlit run app/dashboard.py`.
+# This script starts only FalkorDB with the default demo settings used by
+# RingTrace (.env.example). For the full stack (private FalkorDB + React UI
+# and FastAPI on port 8000), use `docker compose up` instead. This helper is
+# for local API development with `uvicorn api.main:app`.
 set -euo pipefail
 
 CONTAINER_NAME="ringtrace-falkordb"
@@ -21,9 +20,9 @@ if command -v docker >/dev/null 2>&1; then
     echo "[RingTrace] Starting existing FalkorDB container..."
     docker start "${CONTAINER_NAME}"
   else
-    echo "[RingTrace] Pulling + starting falkordb/falkordb on port ${PORT} (+3000 for the FalkorDB browser UI)..."
+    echo "[RingTrace] Pulling + starting falkordb/falkordb on local port ${PORT}..."
     docker run -d --name "${CONTAINER_NAME}" \
-      -p "${PORT}:6379" -p 3000:3000 \
+      -p "127.0.0.1:${PORT}:6379" \
       -v ringtrace_falkordb_data:/data \
       falkordb/falkordb:latest
   fi
@@ -35,7 +34,8 @@ cat <<'EOF'
 [RingTrace] Docker was not found on this machine.
 
 FalkorDB has no pure-pip install — it is a Redis module (native .so) that
-must be loaded by a Redis server that is new enough (Redis >= 7.2). Options:
+must be loaded by a Redis server supported by that module release (recent
+FalkorDB modules require Redis 8.0+). Options:
 
   1. Install Docker, then re-run this script (recommended — by far the
      simplest path, and what docker-compose.yml also uses).
@@ -43,9 +43,9 @@ must be loaded by a Redis server that is new enough (Redis >= 7.2). Options:
      https://docs.falkordb.com/
 
 NOTE: on some constrained sandboxes (older glibc, no Docker), you may need
-to build Redis 7.4+ from source and run it with:
+to build a Redis version supported by the FalkorDB module from source and run it with:
     redis-server --loadmodule /path/to/falkordb.so --port 6379
-RingTrace was developed and demoed against exactly this setup; see the
-"Local / sandboxed environments" section of README.md for a worked example.
+See the README's Setup section for the supported Docker and local-development
+paths. Container images remain the recommended option for a local demo.
 EOF
 exit 1

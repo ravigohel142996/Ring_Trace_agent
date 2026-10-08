@@ -2,9 +2,9 @@ services:
   falkordb:
     image: falkordb/falkordb:latest
     container_name: ringtrace-falkordb
-    ports:
-      - "6379:6379"   # Redis/FalkorDB protocol
-      - "3000:3000"   # FalkorDB browser UI (optional, handy for judges to poke at the raw graph)
+    # Keep the graph service private to the Compose network; judges use one app URL.
+    expose:
+      - "6379"
     volumes:
       - falkordb_data:/data
     healthcheck:
@@ -25,6 +25,8 @@ services:
       FALKORDB_HOST: falkordb
       FALKORDB_PORT: "6379"
       FALKORDB_GRAPH: ${FALKORDB_GRAPH:-ringtrace}
+      FALKORDB_USERNAME: ${FALKORDB_USERNAME:-}
+      FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-none}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
@@ -40,9 +42,14 @@ services:
       RANDOM_SEED: ${RANDOM_SEED:-42}
       RINGTRACE_LOG_LEVEL: ${RINGTRACE_LOG_LEVEL:-INFO}
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
       - ./reports:/app/reports
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
 volumes:
   falkordb_data:
