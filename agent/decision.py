@@ -192,7 +192,11 @@ def execute_recommended_action(ctx, account_id: str, verdict: dict) -> list[dict
 
     case_result = call("create_investigation_case", account_id=account_id,
                         notes=f"Auto-generated from verdict: {verdict.get('verdict')}")
-    case_id = results[0]["data"]["case_id"]
+    # Without a persisted case node there is no safe target for provenance or
+    # follow-on action writes. Preserve the structured failure and stop here.
+    case_id = (case_result.data or {}).get("case_id") if case_result.ok else None
+    if not case_id:
+        return results
 
     # ------------------------------------------------------------------
     # Second-order evidence graph (additive): one GraphFinding + Evidence

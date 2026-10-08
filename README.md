@@ -599,13 +599,17 @@ npm --prefix frontend run build
 PYTHONPATH=. pytest tests/ -q
 ```
 
-**65 tests pass when FalkorDB is running with the synthetic demo graph**;
-24 graph-dependent cases are skipped cleanly when no graph is available.
+**68 tests pass when FalkorDB is running with the synthetic demo graph**;
+23 graph-dependent cases are skipped cleanly when no graph is available.
 Current coverage is split across:
 
-- `test_api.py` (35) — FastAPI contracts, investigation/result routes,
-  graph/evidence/trace exports, simulated approval/execution transitions,
-  built SPA routes/assets, and API fallbacks.
+- `test_api.py` (36) — FastAPI contracts, investigation/result routes,
+  graph/evidence/trace exports, server-enforced approval and explicit
+  confirmation, durable case summaries, built SPA routes/assets, and API
+  fallbacks.
+- `test_actions.py` (1) and `test_context.py` (1) — failed graph-case writes
+  stop follow-on actions, and graph IDs remain unique across independent
+  tool contexts.
 - `test_tools.py` (10) and `test_decision.py` (4) — graph tools, known
   scenarios, and LOW/HIGH/CRITICAL outcomes from different graph structures.
 - `test_integration_falkordb.py` (10) — real graph schema, graph-evidence
@@ -615,9 +619,11 @@ Current coverage is split across:
 - `test_llm_loop_mocked.py` (3) — scripted LLM tool-calling loop, iteration
   guard, and disallowed-action-tool rejection; no live LLM key required.
 
-The production smoke check also verified FastAPI-served `/`, `/cases`,
-`/risk`, `/graph`, built JS/CSS assets, `/api/health`, live FalkorDB health,
-a real A1027 agent investigation, and a confirmed simulated graph write.
+The live production smoke check verified FastAPI-served `/`, `/cases`, `/risk`,
+`/graph`, built JS assets, `/api/health`, FalkorDB health, a real A1027
+investigation, graph/evidence/trace exports, and normalized read-only durable
+case records. API tests also verify that execution is rejected unless both
+approval and explicit confirmation are present.
 
 ## 19. Evaluation
 
@@ -714,7 +720,7 @@ ringtrace/
 ├── data/           Generated CSVs + evaluation-only synthetic ground truth
 ├── evaluation/     Classifier metrics + full-pipeline investigation metrics
 ├── reports/        Generated case reports (git-ignored)
-├── tests/          65 tests across API, tools, decisions, scoring, and graph integration
+├── tests/          68 tests across API, action safety, tools, scoring, and graph integration
 ├── scripts/        FalkorDB setup, pipeline, and legacy Streamlit screenshot helper
 ├── docker/         Multi-stage frontend build, FastAPI runtime entrypoint
 ├── docs/           Demo script, status notes, and project documentation

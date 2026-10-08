@@ -11,7 +11,6 @@ from tests.conftest import requires_graph
 from tools.base import REGISTRY
 
 
-@requires_graph
 def test_registry_has_all_required_tools():
     required = {
         "get_account_context", "find_fraud_ring", "rank_ring_leaders", "trace_money_path",

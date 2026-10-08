@@ -29,11 +29,11 @@ export interface ToolStep {
 export interface Verdict {
   account_id?: string;
   verdict: string;
-  risk_score: number;
-  risk_class: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | string;
-  confidence: number;
+  risk_score?: number | null;
+  risk_class?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | string;
+  confidence?: number | null;
   recommended_action: string;
-  reasoning: string[];
+  reasoning?: string[];
   ring_members?: string[];
   ring_leader?: string | null;
   ring_score?: number;
@@ -59,6 +59,9 @@ export interface CaseRecord {
   approval?: { approved_at: string; approved_by: string } | null;
   action?: Record<string, unknown> | null;
   graph_case_id?: string | null;
+  source?: 'FalkorDB' | 'active_session' | string;
+  read_only?: boolean;
+  graph_record?: Record<string, unknown>;
 }
 
 export interface GraphNode {

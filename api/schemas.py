@@ -52,6 +52,10 @@ class ActionApprovalResponse(ApiModel):
     simulated: Literal[True] = True
 
 
+class ActionExecutionRequest(ApiModel):
+    confirmed: bool = Field(..., description="Explicit confirmation from the final simulated-action review.")
+
+
 class ActionExecutionResponse(ApiModel):
     case_id: str
     status: str

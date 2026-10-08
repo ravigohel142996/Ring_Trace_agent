@@ -36,6 +36,14 @@ def _create_investigation_case(ctx: ToolContext, inp: CreateInvestigationCaseInp
         risk_score=verdict["risk_score"], confidence=verdict["confidence"],
         recommended_action=verdict["recommended_action"], notes=inp.notes,
     )
+    if not res.data:
+        return ToolResult(
+            ok=False,
+            tool="create_investigation_case",
+            summary=f"Could not persist an investigation case for {inp.account_id}.",
+            error="case_write_failed",
+            evidence=[res.as_evidence()],
+        )
     summary = f"Created investigation case {case_id} for {inp.account_id} (verdict={verdict['verdict']})."
     return ToolResult(ok=True, tool="create_investigation_case", summary=summary,
                        data={"case_id": case_id, "verdict": verdict}, evidence=[res.as_evidence()])

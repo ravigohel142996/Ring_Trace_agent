@@ -46,12 +46,13 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
   const selectedScenario = useMemo(() => scenarios.find((scenario) => scenario.id === scenarioId), [scenarios, scenarioId]);
   const verdict = activeCase?.result?.verdict;
   const steps = activeCase?.result?.steps || [];
+  const riskClass = verdict?.risk_class;
 
   useEffect(() => {
     let current = true;
     setGraphPayload(null);
     setGraphError('');
-    if (!activeCase?.result?.steps) { setGraphLoading(false); return () => { current = false; }; }
+    if (!activeCase?.result?.steps || activeCase.read_only) { setGraphLoading(false); return () => { current = false; }; }
     setGraphLoading(true);
     api.graph(activeCase.case_id)
       .then((payload) => current && setGraphPayload(payload))
@@ -105,11 +106,11 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
           {activeCase && verdict ? (
             <>
               <div className="panel result-panel">
-                <div className="result-topline"><div className="eyebrow">INVESTIGATION RESULT <span className="result-live-dot"/></div><span className="case-reference">{activeCase.case_id}</span></div>
+                <div className="result-topline"><div className="eyebrow">{activeCase.read_only ? 'DURABLE GRAPH CASE · READ ONLY' : 'INVESTIGATION RESULT'} {!activeCase.read_only && <span className="result-live-dot"/>}</div><span className="case-reference">{activeCase.case_id}</span></div>
                 <div className="decision-row">
-                  <div className={`risk-score risk-${String(verdict.risk_class).toLowerCase()}`}><strong>{(Number(verdict.risk_score) * 100).toFixed(0)}</strong><span>/ 100</span><small>GRAPH RISK</small></div>
-                  <div className="decision-copy"><div className={`risk-label risk-text-${String(verdict.risk_class).toLowerCase()}`}>{verdict.risk_class} RISK</div><h2>{verdict.verdict}</h2><p>{verdict.recommended_action?.replaceAll('_', ' ')}</p></div>
-                  <span className="confidence-value"><b>{Math.round(Number(verdict.confidence) * 100)}%</b><small>CONFIDENCE</small></span>
+                  <div className={`risk-score ${riskClass ? `risk-${String(riskClass).toLowerCase()}` : ''}`}><strong>{typeof verdict.risk_score === 'number' ? (verdict.risk_score * 100).toFixed(0) : '—'}</strong><span>/ 100</span><small>{activeCase.read_only ? 'PERSISTED RISK' : 'GRAPH RISK'}</small></div>
+                  <div className="decision-copy"><div className={`risk-label${riskClass ? ` risk-text-${String(riskClass).toLowerCase()}` : ''}`}>{riskClass ? `${riskClass} RISK` : 'RISK CLASS NOT STORED'}</div><h2>{verdict.verdict}</h2><p>{verdict.recommended_action?.replaceAll('_', ' ') || 'Action not recorded'}</p></div>
+                  <span className="confidence-value"><b>{typeof verdict.confidence === 'number' ? `${Math.round(verdict.confidence * 100)}%` : '—'}</b><small>CONFIDENCE</small></span>
                 </div>
                 <div className="result-divider"/>
                 <div className="facts-strip">
@@ -122,26 +123,32 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
 
               <section className="panel investigation-graph-panel">
                 <div className="panel-heading compact"><div><div className="eyebrow">GRAPH CONTEXT</div><h2>Relationships behind the decision</h2></div><span className="case-reference">{activeCase.case_id} · {activeCase.account_id}</span></div>
-                {graphLoading && <div className="graph-loading"><div className="spinner"/><span>Loading graph data returned by the API…</span></div>}
-                {graphError && <div className="inline-error">{graphError}</div>}
-                {graphPayload && <GraphCanvas graph={graphPayload}/>}
-                {!graphLoading && !graphError && !graphPayload && <div className="inline-empty">This investigation did not return a graph payload.</div>}
+                {activeCase.read_only ? <div className="inline-empty">The durable graph case stores its decision summary. The original investigation neighborhood and query trace were not persisted, so no historical graph snapshot is shown.</div> : <>
+                  {graphLoading && <div className="graph-loading"><div className="spinner"/><span>Loading graph data returned by the API…</span></div>}
+                  {graphError && <div className="inline-error">{graphError}</div>}
+                  {graphPayload && <GraphCanvas graph={graphPayload}/>}
+                  {!graphLoading && !graphError && !graphPayload && <div className="inline-empty">This investigation did not return a graph payload.</div>}
+                </>}
               </section>
 
-              <WhyActionPanel result={activeCase.result}/>
-              <ActionCenter record={activeCase} onUpdate={onUpdateCase}/>
-              <EvidencePanel steps={steps}/>
+              {activeCase.read_only ? <section className="panel why-panel durable-record-panel">
+                <div className="why-header"><div><div className="eyebrow">PERSISTED FALKORDB RECORD</div><h2>Read-only action summary</h2></div><span className="why-badge">DURABLE</span></div>
+                <p>{String(activeCase.graph_record?.notes || activeCase.result.narrative || 'No notes were stored with this graph case.')}</p>
+                <p className="muted">This record is separate from the process-local investigation session. Its approval state, original agent trace, feature vector, and graph snapshot are not stored here; execution and replay are unavailable from this view.</p>
+              </section> : <WhyActionPanel result={activeCase.result}/>}
+              {activeCase.read_only ? <section className="panel action-center-panel durable-readonly-panel"><div className="action-center-header"><div><div className="eyebrow">ACTION CENTER</div><h2>Execution unavailable for durable records</h2></div><span className="simulated-action-badge"><i/> READ ONLY</span></div><p className="muted">This graph record may reflect a prior simulated action. The original API session and its approval token are not persisted, so it cannot be approved or replayed from this view.</p></section> : <ActionCenter record={activeCase} onUpdate={onUpdateCase}/>}
+              {activeCase.read_only ? <section className="panel evidence-panel"><div className="panel-heading compact"><div><div className="eyebrow">SOURCE RECORDS</div><h2>Historical investigation trace</h2></div></div><p className="evidence-empty">The durable graph case summary does not contain the original tool calls or query evidence.</p></section> : <EvidencePanel steps={steps}/>}
 
               <div className="panel trace-panel">
-                <div className="panel-heading compact"><div><div className="eyebrow">AGENT TRACE</div><h2>Evidence gathered</h2></div><span className="trace-count">{steps.length} TOOL CALLS</span></div>
-                <ol className="trace-list">
+                <div className="panel-heading compact"><div><div className="eyebrow">AGENT TRACE</div><h2>{activeCase.read_only ? 'Original investigation trace' : 'Evidence gathered'}</h2></div><span className="trace-count">{steps.length} TOOL CALLS</span></div>
+                {activeCase.read_only ? <p className="evidence-empty">Tool-level investigation output was not persisted with this durable graph record.</p> : <ol className="trace-list">
                   {steps.map((step, index) => <li className={`trace-item ${step.ok ? '' : 'trace-failed'}`} key={`${step.tool}-${index}`}>
                     <span className="trace-marker">{step.ok ? String(index + 1).padStart(2, '0') : '!'}</span>
                     <div className="trace-body"><div className="trace-title"><strong>{toolLabels[step.tool] || step.tool}</strong><code>{step.tool}</code></div><p>{step.summary}</p></div>
                     <span className="trace-duration">{step.duration_ms ? `${Math.round(step.duration_ms)} ms` : '—'}</span>
                   </li>)}
-                </ol>
-                <div className="trace-footer"><span>RESULTS FROM LIVE TOOL OUTPUT</span><span>{formatTime(activeCase.created_at)}</span></div>
+                </ol>}
+                <div className="trace-footer"><span>{activeCase.read_only ? 'NO HISTORICAL TRACE STORED' : 'RESULTS FROM LIVE TOOL OUTPUT'}</span><span>{formatTime(activeCase.created_at)}</span></div>
               </div>
             </>
           ) : (
@@ -155,7 +162,11 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
       </div>
 
       {cases.length > 0 && <section className="recent-section"><div className="section-title"><div><div className="eyebrow">RECENT WORK</div><h2>Open case files</h2></div><button className="text-button" onClick={onViewCases}>View all <Icon name="arrow"/></button></div>
-        <div className="recent-cases">{cases.slice(0, 4).map((item) => <button key={item.case_id} className="recent-case" onClick={() => onSelectCase(item)}><span className={`case-risk-dot risk-bg-${String(item.result?.verdict?.risk_class || 'low').toLowerCase()}`}/><span className="recent-case-main"><strong>{item.account_id}</strong><small>{item.case_id}</small></span><span className="recent-case-verdict">{item.result?.verdict?.risk_class || item.status}</span><Icon name="arrow"/></button>)}</div>
+        <div className="recent-cases">{cases.slice(0, 4).map((item) => {
+          const riskClass = item.result?.verdict?.risk_class;
+          const riskLabel = riskClass || (typeof item.result?.verdict?.risk_score === 'number' ? `${(item.result.verdict.risk_score * 100).toFixed(1)} / 100` : item.status);
+          return <button key={item.case_id} className="recent-case" onClick={() => onSelectCase(item)}><span className={`case-risk-dot${riskClass ? ` risk-bg-${String(riskClass).toLowerCase()}` : ''}`}/><span className="recent-case-main"><strong>{item.account_id || '—'}</strong><small>{item.case_id}</small></span><span className="recent-case-verdict">{riskLabel}</span><Icon name="arrow"/></button>;
+        })}</div>
       </section>}
     </div>
   );

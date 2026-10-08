@@ -233,6 +233,50 @@ def test_cases_list_and_case_retrieval(client, monkeypatch):
     assert client.get(f"/api/cases/{case['case_id']}").json()["account_id"] == "A1027"
 
 
+def test_durable_graph_case_is_normalized_as_read_only(client, monkeypatch):
+    graph_case = {
+        "id": "CASE-PERSISTED",
+        "account_id": "A1027",
+        "verdict": "FRAUD RING CONFIRMED",
+        "risk_score": 0.91,
+        "confidence": 0.98,
+        "recommended_action": "ESCALATE_FOR_MANUAL_INVESTIGATION",
+        "status": "ESCALATED",
+        "notes": "Persisted synthetic action record.",
+        "created_at": 1_700_000_000_000,
+    }
+
+    class FakeQueryResult:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeGraphStore:
+        def __init__(self, _graph):
+            pass
+
+        def list_cases(self):
+            return FakeQueryResult([[graph_case]])
+
+        def get_case(self, case_id):
+            return FakeQueryResult([[graph_case]] if case_id == graph_case["id"] else [])
+
+    monkeypatch.setattr(api_main, "_graph_health", lambda: {"connected": True})
+    monkeypatch.setattr(api_main, "get_graph", lambda: object())
+    monkeypatch.setattr(api_main, "GraphStore", FakeGraphStore)
+
+    listing = client.get("/api/cases").json()
+    summary = next(item for item in listing["cases"] if item["case_id"] == graph_case["id"])
+    detail = client.get(f"/api/cases/{graph_case['id']}").json()
+
+    assert summary["read_only"] is True
+    assert summary["result"]["mode"] == "durable_graph_record"
+    assert summary["result"]["steps"] == []
+    assert summary["result"]["verdict"]["risk_score"] == 0.91
+    assert "risk_class" not in summary["result"]["verdict"]
+    assert summary["created_at"].startswith("2023-11-14T22:13:20")
+    assert detail["graph_record"]["notes"] == graph_case["notes"]
+
+
 def test_unknown_case_is_404(client):
     assert client.get("/api/cases/RT-MISSING").status_code == 404
 
@@ -299,7 +343,9 @@ def test_approve_repeat_is_rejected(client, monkeypatch):
 
 def test_execute_requires_prior_approval(client, monkeypatch):
     case = create_case(client, monkeypatch)
-    assert client.post(f"/api/actions/{case['case_id']}/execute").status_code == 409
+    response = client.post(f"/api/actions/{case['case_id']}/execute", json={"confirmed": True})
+    assert response.status_code == 409
+    assert "Approve" in response.json()["detail"]
 
 
 def test_execute_action_records_graph_write_and_is_single_use(client, monkeypatch):
@@ -307,11 +353,14 @@ def test_execute_action_records_graph_write_and_is_single_use(client, monkeypatc
     monkeypatch.setattr(api_main, "_execute_graph_action", lambda record: ([{"ok": True, "tool": "create_investigation_case", "data": {"case_id": "CASE-1"}}], "CASE-1", "written"))
     client.post(f"/api/actions/{case['case_id']}/approve")
     path = f"/api/actions/{case['case_id']}/execute"
-    response = client.post(path)
+    unconfirmed = client.post(path, json={"confirmed": False})
+    assert unconfirmed.status_code == 409
+    assert "confirm" in unconfirmed.json()["detail"].lower()
+    response = client.post(path, json={"confirmed": True})
     assert response.status_code == 200
     assert response.json()["graph_case_id"] == "CASE-1"
     assert response.json()["graph_write_status"] == "written"
-    assert client.post(path).status_code == 409
+    assert client.post(path, json={"confirmed": True}).status_code == 409
 
 
 def test_unknown_case_action_is_404(client):
@@ -325,8 +374,8 @@ def test_failed_action_attempt_cannot_be_replayed(client, monkeypatch):
     monkeypatch.setattr(api_main, "_execute_graph_action", fail)
     client.post(f"/api/actions/{case['case_id']}/approve")
     path = f"/api/actions/{case['case_id']}/execute"
-    assert client.post(path).status_code == 502
-    assert client.post(path).status_code == 409
+    assert client.post(path, json={"confirmed": True}).status_code == 502
+    assert client.post(path, json={"confirmed": True}).status_code == 409
 
 
 def test_case_listing_is_available_when_graph_probe_fails(client, monkeypatch):

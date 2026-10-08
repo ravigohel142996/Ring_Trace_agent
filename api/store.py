@@ -70,13 +70,15 @@ class InvestigationStore:
             case["approval"] = {"approved_at": approved_at, "approved_by": "investigator"}
             return deepcopy(case)
 
-    def begin_execution(self, case_id: str) -> dict[str, Any]:
+    def begin_execution(self, case_id: str, *, confirmed: bool) -> dict[str, Any]:
         with self._lock:
             case = self._require(case_id)
             if case["execution_attempted"] or case["status"] in {"executing", "executed", "action_failed"}:
                 raise InvalidCaseTransition("Action execution has already been attempted for this case.")
             if case["status"] != "approved":
                 raise InvalidCaseTransition("Approve the simulated action before executing it.")
+            if not confirmed:
+                raise InvalidCaseTransition("Explicitly confirm the simulated action before executing it.")
             case["execution_attempted"] = True
             case["status"] = "executing"
             case["action"] = {"status": "executing", "started_at": utc_now(), "simulated": True}

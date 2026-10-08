@@ -40,5 +40,8 @@ export const api = {
   evidence: (caseId: string) => request<{ evidence: Array<Record<string, unknown>>; total: number }>(`/api/investigation/${encodeURIComponent(caseId)}/evidence`),
   trace: (caseId: string) => request<{ steps: Array<Record<string, unknown>>; total: number }>(`/api/investigation/${encodeURIComponent(caseId)}/trace`),
   approve: (caseId: string) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/approve`, { method: 'POST' }),
-  execute: (caseId: string) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/execute`, { method: 'POST' }),
+  execute: (caseId: string, confirmed: boolean) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/execute`, {
+    method: 'POST',
+    body: JSON.stringify({ confirmed }),
+  }),
 };

@@ -37,7 +37,7 @@ export default function ActionCenter({ record, onUpdate }: Props) {
     setBusy(true);
     setError('');
     try {
-      const response = await api.execute(record.case_id) as { status: string; executed_at: string; graph_case_id: string | null; graph_write_status: string; results: Array<Record<string, unknown>> };
+      const response = await api.execute(record.case_id, true) as { status: string; executed_at: string; graph_case_id: string | null; graph_write_status: string; results: Array<Record<string, unknown>> };
       onUpdate({
         ...record,
         status: response.status,

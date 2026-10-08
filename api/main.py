@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from agent.investigator import Investigator, extract_account_id
 from api.graph_export import build_graph_export
 from api.schemas import (
     ActionApprovalResponse,
+    ActionExecutionRequest,
     ActionExecutionResponse,
     HealthResponse,
     InvestigationRequest,
@@ -103,6 +105,61 @@ def _case_summary(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _graph_created_at(value: Any) -> str:
+    """Convert FalkorDB's millisecond timestamp into a browser-safe ISO date."""
+    if value is None:
+        return ""
+    try:
+        numeric = float(value)
+        seconds = numeric / 1000 if abs(numeric) >= 100_000_000_000 else numeric
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return str(value)
+
+
+def _graph_case_summary(graph_case: dict[str, Any]) -> dict[str, Any]:
+    """Expose persisted action cases without fabricating a lost agent trace."""
+    case_id = str(graph_case["id"])
+    account_id = str(graph_case.get("account_id") or "")
+    raw_score = graph_case.get("risk_score")
+    raw_confidence = graph_case.get("confidence")
+    try:
+        risk_score = float(raw_score) if raw_score is not None else None
+    except (TypeError, ValueError):
+        risk_score = None
+    try:
+        confidence = float(raw_confidence) if raw_confidence is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+    verdict = {
+        "account_id": account_id,
+        "verdict": str(graph_case.get("verdict") or "Stored graph case"),
+        "risk_score": risk_score,
+        "confidence": confidence,
+        "recommended_action": str(graph_case.get("recommended_action") or ""),
+        "reasoning": [],
+    }
+    return {
+        "case_id": case_id,
+        "account_id": account_id,
+        "created_at": _graph_created_at(graph_case.get("created_at")),
+        "status": str(graph_case.get("status") or "OPEN").lower(),
+        "result": {
+            "account_id": account_id,
+            "mode": "durable_graph_record",
+            "steps": [],
+            "verdict": verdict,
+            "narrative": graph_case.get("notes"),
+        },
+        "approval": None,
+        "action": None,
+        "graph_case_id": case_id,
+        "source": "FalkorDB",
+        "read_only": True,
+        "graph_record": graph_case,
+    }
+
+
 @app.get("/api/health", response_model=HealthResponse)
 def api_health() -> dict[str, str]:
     return {"status": "ok", "service": "ringtrace-api"}
@@ -173,16 +230,7 @@ def list_cases(store: InvestigationStore = Depends(get_store)) -> dict[str, Any]
                 if not isinstance(graph_case, dict) or not graph_case.get("id"):
                     continue
                 case_id = str(graph_case["id"])
-                cases_by_id.setdefault(case_id, {
-                    "case_id": case_id,
-                    "account_id": graph_case.get("account_id", ""),
-                    "created_at": str(graph_case.get("created_at", "")),
-                    "status": str(graph_case.get("status", "OPEN")).lower(),
-                    "result": {"verdict": graph_case.get("verdict"), "risk_score": graph_case.get("risk_score"), "recommended_action": graph_case.get("recommended_action")},
-                    "approval": None,
-                    "action": None,
-                    "graph_case_id": case_id,
-                })
+                cases_by_id.setdefault(case_id, _graph_case_summary(graph_case))
     except Exception as exc:  # list in-memory sessions even when FalkorDB is down
         logger.info("Could not add durable graph cases to the API listing: %s", exc)
     cases = list(cases_by_id.values())
@@ -201,8 +249,8 @@ def get_case(case_id: str, store: InvestigationStore = Depends(get_store)) -> di
         result = GraphStore(get_graph()).get_case(case_id)
     except Exception:
         result = None
-    if result and result.data:
-        return {"case_id": case_id, "graph_case": result.data[0][0], "source": "FalkorDB"}
+    if result and result.data and isinstance(result.data[0][0], dict):
+        return _graph_case_summary(result.data[0][0])
     raise HTTPException(status_code=404, detail=f"Case '{case_id}' was not found.")
 
 
@@ -293,9 +341,13 @@ def _execute_graph_action(case: dict[str, Any]) -> tuple[list[dict[str, Any]], s
 
 
 @app.post("/api/actions/{case_id}/execute", response_model=ActionExecutionResponse)
-def execute_action(case_id: str, store: InvestigationStore = Depends(get_store)) -> dict[str, Any]:
+def execute_action(
+    case_id: str,
+    payload: ActionExecutionRequest,
+    store: InvestigationStore = Depends(get_store),
+) -> dict[str, Any]:
     try:
-        case = store.begin_execution(case_id)
+        case = store.begin_execution(case_id, confirmed=payload.confirmed)
     except CaseNotFound:
         raise HTTPException(status_code=404, detail=f"Case '{case_id}' was not found.") from None
     except InvalidCaseTransition as exc:
