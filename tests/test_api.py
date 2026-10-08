@@ -112,10 +112,14 @@ def test_api_health(client):
     assert response.json() == {"status": "ok", "service": "ringtrace-api"}
 
 
-def test_root_is_available_before_frontend_build(client):
+def test_root_serves_frontend_when_built_and_api_fallback_otherwise(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json()["service"] == "RingTrace API"
+    if api_main.FRONTEND_DIST.joinpath("index.html").is_file():
+        assert "<div id=\"root\"></div>" in response.text
+        assert "RingTrace" in response.text
+    else:
+        assert response.json()["service"] == "RingTrace API"
 
 
 def test_graph_health_returns_connection_state(client, monkeypatch):

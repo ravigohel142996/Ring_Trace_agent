@@ -7,6 +7,11 @@ venv/
 .pytest_cache/
 .streamlit/secrets.toml
 
+# Frontend dependencies and generated production assets
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # Local, machine-specific FalkorDB binaries (fetched/built by scripts/setup_falkordb_local.sh)
 bin/
 
