@@ -87,6 +87,11 @@ export default function App() {
     }
   };
 
+  const updateCase = (record: CaseRecord) => {
+    setActiveCase(record);
+    setCases((current) => [record, ...current.filter((item) => item.case_id !== record.case_id)]);
+  };
+
   return (
     <AppShell page={page} graphHealth={graphHealth} caseCount={cases.length} onNavigate={navigate}>
       {page === 'investigate' && (
@@ -101,6 +106,7 @@ export default function App() {
           onSelectCase={selectCase}
           onDismissError={() => setError('')}
           onViewCases={() => navigate('cases')}
+          onUpdateCase={updateCase}
         />
       )}
       {page === 'cases' && <CasesPage cases={cases} onSelect={selectCase} onInvestigate={() => navigate('investigate')} />}

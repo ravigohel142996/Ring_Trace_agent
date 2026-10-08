@@ -1,6 +1,11 @@
-import { useMemo, useState } from 'react';
-import type { CaseRecord, Scenario } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+import { api } from '../api/client';
+import type { CaseRecord, GraphExport, Scenario } from '../types';
+import ActionCenter from '../components/ActionCenter';
+import EvidencePanel from '../components/EvidencePanel';
+import GraphCanvas from '../components/GraphCanvas';
 import { Icon } from '../components/Icon';
+import WhyActionPanel from '../components/WhyActionPanel';
 
 interface Props {
   scenarios: Scenario[];
@@ -13,6 +18,7 @@ interface Props {
   onSelectCase: (record: CaseRecord) => void;
   onDismissError: () => void;
   onViewCases: () => void;
+  onUpdateCase: (record: CaseRecord) => void;
 }
 
 const toolLabels: Record<string, string> = {
@@ -30,13 +36,29 @@ function formatTime(value: string) {
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-export default function InvestigatePage({ scenarios, cases, activeCase, loading, booting, error, onRun, onSelectCase, onDismissError, onViewCases }: Props) {
+export default function InvestigatePage({ scenarios, cases, activeCase, loading, booting, error, onRun, onSelectCase, onDismissError, onViewCases, onUpdateCase }: Props) {
   const [accountId, setAccountId] = useState('A1027');
   const [scenarioId, setScenarioId] = useState('CASE-C');
   const [query, setQuery] = useState('Trace the connected accounts, money movement, and evidence supporting a risk decision.');
+  const [graphPayload, setGraphPayload] = useState<GraphExport | null>(null);
+  const [graphError, setGraphError] = useState('');
+  const [graphLoading, setGraphLoading] = useState(false);
   const selectedScenario = useMemo(() => scenarios.find((scenario) => scenario.id === scenarioId), [scenarios, scenarioId]);
   const verdict = activeCase?.result?.verdict;
   const steps = activeCase?.result?.steps || [];
+
+  useEffect(() => {
+    let current = true;
+    setGraphPayload(null);
+    setGraphError('');
+    if (!activeCase?.result?.steps) { setGraphLoading(false); return () => { current = false; }; }
+    setGraphLoading(true);
+    api.graph(activeCase.case_id)
+      .then((payload) => current && setGraphPayload(payload))
+      .catch((caught) => current && setGraphError(caught instanceof Error ? caught.message : 'Graph payload unavailable.'))
+      .finally(() => current && setGraphLoading(false));
+    return () => { current = false; };
+  }, [activeCase?.case_id]);
 
   const chooseScenario = (nextId: string) => {
     setScenarioId(nextId);
@@ -97,6 +119,18 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
                   <div><span>ENGINE MODE</span><strong className="mono">{activeCase.result.mode.replaceAll('_', ' ')}</strong></div>
                 </div>
               </div>
+
+              <section className="panel investigation-graph-panel">
+                <div className="panel-heading compact"><div><div className="eyebrow">GRAPH CONTEXT</div><h2>Relationships behind the decision</h2></div><span className="case-reference">{activeCase.case_id} · {activeCase.account_id}</span></div>
+                {graphLoading && <div className="graph-loading"><div className="spinner"/><span>Loading graph data returned by the API…</span></div>}
+                {graphError && <div className="inline-error">{graphError}</div>}
+                {graphPayload && <GraphCanvas graph={graphPayload}/>}
+                {!graphLoading && !graphError && !graphPayload && <div className="inline-empty">This investigation did not return a graph payload.</div>}
+              </section>
+
+              <WhyActionPanel result={activeCase.result}/>
+              <ActionCenter record={activeCase} onUpdate={onUpdateCase}/>
+              <EvidencePanel steps={steps}/>
 
               <div className="panel trace-panel">
                 <div className="panel-heading compact"><div><div className="eyebrow">AGENT TRACE</div><h2>Evidence gathered</h2></div><span className="trace-count">{steps.length} TOOL CALLS</span></div>
