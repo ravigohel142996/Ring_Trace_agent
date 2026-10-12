@@ -281,15 +281,23 @@ class GraphStore:
     # 6. calculate_risk_score — graph feature extraction
     # ------------------------------------------------------------------
     def degree_stats(self, account_id: str) -> QueryResult:
+        # Aggregate each transfer direction before matching the next relationship
+        # family. Keeping the stages separate prevents outgoing, incoming, and
+        # LINKED_TO fan-out from multiplying one another's financial totals.
         cypher = """
         MATCH (a:Account {id: $id})
         OPTIONAL MATCH (a)-[out:TRANSFERRED_TO]->()
+        WITH a, count(DISTINCT out) AS out_txn_count,
+             coalesce(sum(out.amount), 0.0) AS total_out_amount
         OPTIONAL MATCH ()-[inn:TRANSFERRED_TO]->(a)
+        WITH a, out_txn_count, total_out_amount,
+             count(DISTINCT inn) AS in_txn_count,
+             coalesce(sum(inn.amount), 0.0) AS total_in_amount
         OPTIONAL MATCH (a)-[l:LINKED_TO]-()
-        RETURN count(DISTINCT out) AS out_txn_count,
-               sum(out.amount) AS total_out_amount,
-               count(DISTINCT inn) AS in_txn_count,
-               sum(inn.amount) AS total_in_amount,
+        RETURN out_txn_count AS out_txn_count,
+               total_out_amount AS total_out_amount,
+               in_txn_count AS in_txn_count,
+               total_in_amount AS total_in_amount,
                count(DISTINCT l) AS linked_degree
         """
         return self._run(cypher, {"id": account_id})

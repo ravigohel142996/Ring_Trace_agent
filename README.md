@@ -364,10 +364,17 @@ directly-linked neighbors that are themselves already flagged
 `data/processed/ground_truth.csv` — **synthetic ground truth only, used for
 training/evaluation, never written onto graph nodes** (the agent cannot
 "cheat" by reading a label; it has to infer risk from structure, like a real
-investigator). Current run on **219 accounts** (now including the DEMO-01..06
-scenarios and merchant purchases — see [Section 13](#13-demo-scenarios)):
-**accuracy 0.945, precision 0.882, recall 0.938, F1 0.909, ROC-AUC 0.995**
-— see `evaluation/synthetic_eval_report.json` for the full report.
+investigator). The fresh post-fix run used **219 labeled accounts** with a
+stratified 25% holdout (**164 train / 55 test**, `random_state=42`) and the
+existing 17-feature schema. The 200-tree forest (`max_depth=8`,
+`min_samples_leaf=2`, `class_weight="balanced"`) scored **accuracy 0.945,
+precision 0.882, recall 0.938, F1 0.909, ROC-AUC 0.995** on that synthetic
+holdout. These are synthetic-only metrics; per-account `predict_proba` values
+are raw model scores, **not calibrated real-world fraud probabilities**. The
+regenerated `evaluation/synthetic_eval_report.json` records the ground-truth
+SHA-256, split parameters, feature order, and classifier settings for
+reproducibility. Independent aggregation of outgoing, incoming, and linked
+relationships keeps identity fan-out from inflating the monetary features.
 
 > Honesty note: an earlier version of this dataset (without the deliberately
 > ambiguous/benign look-alike scenarios) scored a suspicious 1.00 across
@@ -590,18 +597,22 @@ See `.env.example` for the full annotated list. Highlights:
 
 ## 18. Testing
 
-Build the frontend and run the repository's explicit test directory (this
-checkout also contains ignored upstream FalkorDB source under `bin/`):
+Build the frontend and run the repository's explicit test directory. Graph-backed
+tests include mutations, so they require an explicitly opted-in disposable
+FalkorDB instance loaded with the synthetic demo graph. The harness refuses to
+probe or mutate port `6379` even if the opt-in flag is set; without a safe target,
+graph-dependent tests skip without connecting.
 
 ```bash
 npm --prefix frontend ci
 npm --prefix frontend run build
-PYTHONPATH=. pytest tests/ -q
+# Configure the following variables for your disposable FalkorDB instance (not 6379):
+RINGTRACE_TEST_DISPOSABLE=1 FALKORDB_HOST=127.0.0.1 FALKORDB_PORT=6380 \
+FALKORDB_GRAPH=ringtrace PYTHONPATH=. pytest tests/ -q
 ```
 
-**68 tests pass when FalkorDB is running with the synthetic demo graph**;
-23 graph-dependent cases are skipped cleanly when no graph is available.
-Current coverage is split across:
+The validation run on a seeded disposable instance completed **74 tests, all
+passing**. Current coverage is split across:
 
 - `test_api.py` (36) — FastAPI contracts, investigation/result routes,
   graph/evidence/trace exports, server-enforced approval and explicit
@@ -612,18 +623,22 @@ Current coverage is split across:
   tool contexts.
 - `test_tools.py` (10) and `test_decision.py` (4) — graph tools, known
   scenarios, and LOW/HIGH/CRITICAL outcomes from different graph structures.
-- `test_integration_falkordb.py` (10) — real graph schema, graph-evidence
-  guardrails, investigation fallback, and the persisted second-order action
-  trail (`HAS_CASE`, `SUPPORTED_BY`, `RESULTED_IN`, `TRIGGERED_BY`).
+- `test_integration_falkordb.py` (16 collected cases across 12 test functions) —
+  real graph schema, parameterized transfer-total fan-out/zero-match regression,
+  graph-evidence guardrails, investigation fallback, and the persisted second-order action
+  trail (`HAS_CASE`, `SUPPORTED_BY`, `RESULTED_IN`, `TRIGGERED_BY`), all only
+  on the explicitly configured disposable graph.
 - `test_risk_scorer.py` (3) — unit coverage for graph-evidence guardrails.
 - `test_llm_loop_mocked.py` (3) — scripted LLM tool-calling loop, iteration
   guard, and disallowed-action-tool rejection; no live LLM key required.
 
-The live production smoke check verified FastAPI-served `/`, `/cases`, `/risk`,
-`/graph`, built JS assets, `/api/health`, FalkorDB health, a real A1027
-investigation, graph/evidence/trace exports, and normalized read-only durable
-case records. API tests also verify that execution is rejected unless both
-approval and explicit confirmation are present.
+The previously recorded application smoke check covered FastAPI-served `/`,
+`/cases`, `/risk`, `/graph`, built JS assets, `/api/health`, graph health, an
+A1027 investigation, graph/evidence/trace exports, and normalized read-only
+durable case records. For this P0 task, the real investigations and the
+approval/confirmation/write-back simulation were run against the disposable
+FalkorDB instance only. API tests verify that execution is rejected unless
+both approval and explicit confirmation are present.
 
 ## 19. Evaluation
 
@@ -655,10 +670,13 @@ Two **distinct, separately-reported** evaluation layers:
      to the leader from many feeders, not through them sequentially).
    - **Identity-link recall**: 5/5 (100%) on accounts with known shared
      device/IP signals.
-   - **Action accuracy vs. ground truth** (stratified 80-account sample,
-     full pipeline): accuracy 0.988, precision 1.0, recall 0.975, **0 false
-     positives**, 1 false negative (a layered-chain feeder with no
-     corroborating evidence of its own — see [Section 10](#10-ml-risk-scoring)).
+   - **Action accuracy vs. ground truth** (fresh balanced 80-account sample:
+     40 fraud / 40 legitimate, `random_state=42`; full pipeline): accuracy
+     0.988, precision 1.0, recall 0.975, **0 false positives**, 1 false
+     negative (`A1331`, which has no corroborating evidence of its own — see
+     [Section 10](#10-ml-risk-scoring)). The separate ring check also reports
+     that 23 of 30 sampled legitimate accounts fall into a large WCC component;
+     that synthetic-graph limitation is not hidden by the aggregate metrics.
 
 Run it yourself: `python -m evaluation.evaluate_investigation` (takes ~90s;
 runs a full investigation per sampled account).

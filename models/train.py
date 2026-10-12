@@ -12,6 +12,7 @@ make NO claim about real-world fraud detection performance.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import time
@@ -96,6 +97,26 @@ def train(test_size: float = 0.25, random_state: int = 42) -> dict:
 
     report = {
         "disclaimer": "SYNTHETIC DATA EVALUATION ONLY. Not a claim of real-world fraud-detection accuracy.",
+        "score_interpretation": (
+            "Reported classifier metrics are synthetic holdout results. Per-account "
+            "predict_proba outputs are raw model scores, not calibrated real-world fraud probabilities."
+        ),
+        "reproducibility": {
+            "split_method": "stratified sklearn.model_selection.train_test_split",
+            "test_size": float(test_size),
+            "random_state": int(random_state),
+            "ground_truth_sha256": hashlib.sha256(GROUND_TRUTH_PATH.read_bytes()).hexdigest(),
+            "feature_names": list(FEATURE_NAMES),
+            "classifier": {
+                "type": "RandomForestClassifier",
+                "n_estimators": 200,
+                "max_depth": 8,
+                "min_samples_leaf": 2,
+                "class_weight": "balanced",
+                "random_state": int(random_state),
+            },
+        },
+        "n_ground_truth_rows": int(len(gt)),
         "n_accounts_total": int(len(df)),
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),

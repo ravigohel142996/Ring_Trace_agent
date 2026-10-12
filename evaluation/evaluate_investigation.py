@@ -182,9 +182,12 @@ def evaluate_action_accuracy(gs: GraphStore, rs: RiskScorer, gt: pd.DataFrame, s
     fraud_rows = gt[gt["is_fraud"] == 1]
     legit_rows = gt[gt["is_fraud"] == 0]
     half = sample_size // 2
+    fraud_sampled = min(half, len(fraud_rows))
+    legit_sampled = min(half, len(legit_rows))
+    sample_random_state = 42
     sampled = pd.concat([
-        fraud_rows.sample(n=min(half, len(fraud_rows)), random_state=42),
-        legit_rows.sample(n=min(half, len(legit_rows)), random_state=42),
+        fraud_rows.sample(n=fraud_sampled, random_state=sample_random_state),
+        legit_rows.sample(n=legit_sampled, random_state=sample_random_state),
     ])
 
     tp = fp = tn = fn = 0
@@ -218,6 +221,11 @@ def evaluate_action_accuracy(gs: GraphStore, rs: RiskScorer, gt: pd.DataFrame, s
     f1 = (2 * precision * recall / (precision + recall)) if precision and recall and (precision + recall) else None
 
     return {
+        "sample_size_requested": sample_size,
+        "sample_random_state": sample_random_state,
+        "sampling_strategy": "equal-size fraud/legit samples (bounded by class counts)",
+        "fraud_accounts_sampled": fraud_sampled,
+        "legit_accounts_sampled": legit_sampled,
         "n_accounts": len(rows), "elapsed_seconds": round(elapsed, 1),
         "true_positive": tp, "false_positive": fp, "true_negative": tn, "false_negative": fn,
         "accuracy": round(accuracy, 3) if accuracy is not None else None,
