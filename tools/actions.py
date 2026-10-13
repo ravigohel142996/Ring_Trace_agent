@@ -29,12 +29,13 @@ class CreateInvestigationCaseInput(BaseModel):
 
 
 def _create_investigation_case(ctx: ToolContext, inp: CreateInvestigationCaseInput) -> ToolResult:
-    verdict = build_verdict(ctx, inp.account_id)
+    verdict = getattr(ctx, "action_verdict", None) or build_verdict(ctx, inp.account_id)
     case_id = ctx.new_case_id()
     res = ctx.graph_store.create_case(
         case_id=case_id, account_id=inp.account_id, verdict=verdict["verdict"],
         risk_score=verdict["risk_score"], confidence=verdict["confidence"],
         recommended_action=verdict["recommended_action"], notes=inp.notes,
+        audit=ctx.action_audit,
     )
     if not res.data:
         return ToolResult(
@@ -56,9 +57,12 @@ class FlagAccountInput(BaseModel):
 
 def _flag_account(ctx: ToolContext, inp: FlagAccountInput) -> ToolResult:
     res = ctx.graph_store.flag_account(inp.account_id, inp.reason)
+    if not res.data:
+        return ToolResult(ok=False, tool="flag_account", summary=f"Could not flag {inp.account_id}.",
+                           error="account_write_failed", evidence=[res.as_evidence()])
     return ToolResult(ok=True, tool="flag_account",
                        summary=f"Flagged {inp.account_id}: {inp.reason}",
-                       data={"account": res.data[0][0] if res.data else None}, evidence=[res.as_evidence()])
+                       data={"account": res.data[0][0]}, evidence=[res.as_evidence()])
 
 
 class MarkHighRiskInput(BaseModel):
@@ -68,9 +72,12 @@ class MarkHighRiskInput(BaseModel):
 
 def _mark_high_risk(ctx: ToolContext, inp: MarkHighRiskInput) -> ToolResult:
     res = ctx.graph_store.mark_high_risk(inp.account_id, inp.risk_score)
+    if not res.data:
+        return ToolResult(ok=False, tool="mark_high_risk", summary=f"Could not mark {inp.account_id} as HIGH risk.",
+                           error="account_write_failed", evidence=[res.as_evidence()])
     return ToolResult(ok=True, tool="mark_high_risk",
                        summary=f"Marked {inp.account_id} as HIGH risk (score={inp.risk_score:.2f}).",
-                       data={"account": res.data[0][0] if res.data else None}, evidence=[res.as_evidence()])
+                       data={"account": res.data[0][0]}, evidence=[res.as_evidence()])
 
 
 class EscalateCaseInput(BaseModel):
@@ -95,9 +102,13 @@ class RequestManualReviewInput(BaseModel):
 
 def _request_manual_review(ctx: ToolContext, inp: RequestManualReviewInput) -> ToolResult:
     res = ctx.graph_store.request_manual_review(inp.account_id, inp.reason)
+    if not res.data:
+        return ToolResult(ok=False, tool="request_manual_review",
+                           summary=f"Could not request manual review for {inp.account_id}.",
+                           error="account_write_failed", evidence=[res.as_evidence()])
     return ToolResult(ok=True, tool="request_manual_review",
                        summary=f"Requested manual review for {inp.account_id}: {inp.reason}",
-                       data={"account": res.data[0][0] if res.data else None}, evidence=[res.as_evidence()])
+                       data={"account": res.data[0][0]}, evidence=[res.as_evidence()])
 
 
 class AddToWatchlistInput(BaseModel):

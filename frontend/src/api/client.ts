@@ -1,4 +1,4 @@
-import type { CaseRecord, GraphExport, GraphHealth, Scenario } from '../types';
+import type { AnalystSession, CaseRecord, GraphExport, GraphHealth, Scenario } from '../types';
 
 export class ApiError extends Error {
   status: number;
@@ -12,6 +12,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: 'same-origin',
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers,
@@ -24,6 +25,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return payload as T;
 }
+
+const csrfHeaders = (csrfToken: string) => ({ 'X-CSRF-Token': csrfToken });
 
 export const api = {
   health: () => request<{ status: string; service: string }>('/api/health'),
@@ -39,9 +42,26 @@ export const api = {
   graph: (caseId: string) => request<GraphExport>(`/api/investigation/${encodeURIComponent(caseId)}/graph`),
   evidence: (caseId: string) => request<{ evidence: Array<Record<string, unknown>>; total: number }>(`/api/investigation/${encodeURIComponent(caseId)}/evidence`),
   trace: (caseId: string) => request<{ steps: Array<Record<string, unknown>>; total: number }>(`/api/investigation/${encodeURIComponent(caseId)}/trace`),
-  approve: (caseId: string) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/approve`, { method: 'POST' }),
-  execute: (caseId: string, confirmed: boolean) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/execute`, {
+  authSession: () => request<AnalystSession>('/api/auth/session', { cache: 'no-store' }),
+  login: (username: string, password: string) => request<AnalystSession>('/api/auth/login', {
     method: 'POST',
+    body: JSON.stringify({ username, password }),
+    cache: 'no-store',
+  }),
+  logout: (csrfToken: string) => request<AnalystSession>('/api/auth/logout', {
+    method: 'POST',
+    headers: csrfHeaders(csrfToken),
+    cache: 'no-store',
+  }),
+  approve: (caseId: string, csrfToken: string) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/approve`, {
+    method: 'POST',
+    headers: csrfHeaders(csrfToken),
+    cache: 'no-store',
+  }),
+  execute: (caseId: string, confirmed: boolean, csrfToken: string) => request<Record<string, unknown>>(`/api/actions/${encodeURIComponent(caseId)}/execute`, {
+    method: 'POST',
+    headers: csrfHeaders(csrfToken),
     body: JSON.stringify({ confirmed }),
+    cache: 'no-store',
   }),
 };

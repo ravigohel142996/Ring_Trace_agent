@@ -414,14 +414,22 @@ class GraphStore:
     # ACTION LAYER (graph-native writes)
     # ------------------------------------------------------------------
     def create_case(self, case_id: str, account_id: str, verdict: str, risk_score: float,
-                     confidence: float, recommended_action: str, notes: str) -> QueryResult:
+                     confidence: float, recommended_action: str, notes: str,
+                     audit: Optional[dict] = None) -> QueryResult:
+        audit = audit or {}
         cypher = """
         MATCH (a:Account {id: $account_id})
         CREATE (c:Case {
             id: $case_id, account_id: $account_id, verdict: $verdict,
             risk_score: $risk_score, confidence: $confidence,
             recommended_action: $recommended_action, status: 'OPEN',
-            notes: $notes, created_at: timestamp()
+            notes: $notes, created_at: timestamp(),
+            api_case_id: $api_case_id, action_type: $action_type,
+            approved_by: $approved_by, approved_at: $approved_at,
+            approval_expires_at: $approval_expires_at,
+            execution_actor: $execution_actor,
+            execution_started_at: $execution_started_at,
+            action_outcome: 'pending', graph_write_status: 'pending'
         })-[:INVESTIGATES]->(a)
         RETURN c {.*} AS case
         """
@@ -429,6 +437,13 @@ class GraphStore:
             "case_id": case_id, "account_id": account_id, "verdict": verdict,
             "risk_score": risk_score, "confidence": confidence,
             "recommended_action": recommended_action, "notes": notes,
+            "api_case_id": audit.get("api_case_id"),
+            "action_type": audit.get("action_type", recommended_action),
+            "approved_by": audit.get("approved_by"),
+            "approved_at": audit.get("approved_at"),
+            "approval_expires_at": audit.get("approval_expires_at"),
+            "execution_actor": audit.get("execution_actor"),
+            "execution_started_at": audit.get("execution_started_at"),
         })
 
     def flag_account(self, account_id: str, reason: str) -> QueryResult:
@@ -519,21 +534,102 @@ class GraphStore:
         """
         return self._run(cypher, {"case_id": case_id, "account_id": account_id, "findings": findings})
 
-    def record_action_outcome(self, case_id: str, action_id: str, action_type: str, reason: str) -> QueryResult:
-        """Creates the Action node and the Case-[:RESULTED_IN]->Action edge.
+    def record_action_outcome(
+        self,
+        case_id: str,
+        action_id: str,
+        action_type: str,
+        reason: str,
+        audit: Optional[dict] = None,
+    ) -> QueryResult:
+        """Create a pending Action audit node; finalize it only after all graph writes.
+
         Call `link_action_to_findings` right after with the GraphFinding ids
-        this action was triggered by (kept as two queries — see the
-        FalkorDB write-ordering note on the transaction-loading batch in
-        ingestion/load_to_falkordb.py for why writes that depend on a
-        subsequent conditional MATCH are split into separate queries)."""
+        this action was triggered by. The Case/Action outcome remains pending
+        until `finalize_case_action_audit` confirms the end of the multi-query
+        write sequence.
+        """
+        audit = audit or {}
         cypher = """
         MATCH (c:Case {id: $case_id})
-        CREATE (ac:Action {id: $action_id, action_type: $action_type, reason: $reason, created_at: timestamp()})
+        CREATE (ac:Action {
+            id: $action_id, case_id: $case_id, api_case_id: $api_case_id,
+            action_type: $action_type, reason: $reason,
+            approved_by: $approved_by, approved_at: $approved_at,
+            approval_expires_at: $approval_expires_at,
+            execution_actor: $execution_actor,
+            execution_started_at: $execution_started_at,
+            action_outcome: 'pending', graph_write_status: 'pending',
+            created_at: timestamp()
+        })
         CREATE (c)-[:RESULTED_IN]->(ac)
         RETURN ac {.*} AS action
         """
-        return self._run(cypher, {"case_id": case_id, "action_id": action_id,
-                                   "action_type": action_type, "reason": reason})
+        return self._run(cypher, {
+            "case_id": case_id,
+            "action_id": action_id,
+            "api_case_id": audit.get("api_case_id"),
+            "action_type": action_type,
+            "reason": reason,
+            "approved_by": audit.get("approved_by"),
+            "approved_at": audit.get("approved_at"),
+            "approval_expires_at": audit.get("approval_expires_at"),
+            "execution_actor": audit.get("execution_actor"),
+            "execution_started_at": audit.get("execution_started_at"),
+        })
+
+    def finalize_case_action_audit(
+        self,
+        case_id: str,
+        *,
+        action_id: str | None,
+        action_outcome: str,
+        graph_write_status: str,
+        execution_finished_at: str,
+        executed_at: str | None,
+        error: str | None = None,
+    ) -> QueryResult:
+        """Record the final outcome atomically on the Case and optional Action node."""
+        params = {
+            "case_id": case_id,
+            "action_id": action_id,
+            "action_outcome": action_outcome,
+            "graph_write_status": graph_write_status,
+            "execution_finished_at": execution_finished_at,
+            "executed_at": executed_at,
+            "error": error,
+        }
+        if action_id:
+            cypher = """
+            MATCH (c:Case {id: $case_id})
+            MATCH (ac:Action {id: $action_id, case_id: $case_id})
+            SET c.action_outcome = $action_outcome,
+                c.graph_write_status = $graph_write_status,
+                c.execution_finished_at = $execution_finished_at,
+                c.executed_at = $executed_at,
+                c.action_error = $error,
+                ac.action_outcome = $action_outcome,
+                ac.graph_write_status = $graph_write_status,
+                ac.execution_finished_at = $execution_finished_at,
+                ac.executed_at = $executed_at,
+                ac.action_error = $error
+            RETURN c.id AS case_id, c.api_case_id AS api_case_id,
+                   ac.id AS action_id, c.action_outcome AS action_outcome,
+                   c.graph_write_status AS graph_write_status
+            """
+        else:
+            cypher = """
+            MATCH (c:Case {id: $case_id})
+            SET c.action_outcome = $action_outcome,
+                c.graph_write_status = $graph_write_status,
+                c.execution_finished_at = $execution_finished_at,
+                c.executed_at = $executed_at,
+                c.action_error = $error
+            RETURN c.id AS case_id, c.api_case_id AS api_case_id,
+                   null AS action_id, c.action_outcome AS action_outcome,
+                   c.graph_write_status AS graph_write_status
+            """
+        return self._run(cypher, params)
 
     def link_action_to_findings(self, action_id: str, finding_ids: list) -> QueryResult:
         cypher = """

@@ -6,6 +6,7 @@ redis>=5.0.0
 # Single-port HTTP API (FastAPI serves the built frontend in production)
 fastapi>=0.110.0,<1.0.0
 uvicorn>=0.30.0,<1.0.0
+itsdangerous>=2.2.0,<3.0.0  # signed demo analyst sessions
 
 # Agent / LLM tool-calling (OpenAI-compatible; works with Groq, OpenAI, local vLLM, etc.)
 openai>=1.30.0

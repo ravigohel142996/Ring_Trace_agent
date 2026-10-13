@@ -50,13 +50,31 @@ export interface InvestigationResult {
   graph_health: GraphHealth;
 }
 
+export interface AnalystSession {
+  auth_enabled: boolean;
+  authenticated: boolean;
+  analyst?: string | null;
+  csrf_token?: string | null;
+  expires_at?: string | null;
+}
+
+export interface CaseApproval {
+  case_id?: string;
+  action_type?: string;
+  approved_at: string;
+  approved_by: string;
+  expires_at?: string | null;
+  policy_seconds?: number;
+}
+
 export interface CaseRecord {
   case_id: string;
   account_id: string;
   created_at: string;
   status: string;
   result: InvestigationResult;
-  approval?: { approved_at: string; approved_by: string } | null;
+  approval?: CaseApproval | null;
+  approval_history?: CaseApproval[];
   action?: Record<string, unknown> | null;
   graph_case_id?: string | null;
   source?: 'FalkorDB' | 'active_session' | string;

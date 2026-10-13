@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import api.main as api_main
 from agent.investigator import InvestigationResult
+from api.auth import AuthSessionRegistry
 from api.store import InvestigationStore
 
 
@@ -83,11 +84,31 @@ def sample_result(account_id: str = "A1027") -> InvestigationResult:
 
 @pytest.fixture
 def client(monkeypatch):
+    monkeypatch.setenv("RINGTRACE_AUTH_SECRET", "test-only-secret-for-ringtrace-auth-tests-2026")
+    monkeypatch.setenv("RINGTRACE_DEMO_USERNAME", "demo-analyst")
+    monkeypatch.setenv("RINGTRACE_DEMO_PASSWORD", "test-only-password")
+    monkeypatch.setenv("RINGTRACE_SESSION_TTL_SECONDS", "28800")
+    monkeypatch.setenv("RINGTRACE_APPROVAL_TTL_SECONDS", "300")
+    monkeypatch.setenv("RINGTRACE_AUTH_COOKIE_SECURE", "false")  # TestClient uses local HTTP.
     old_store = api_main.app.state.investigations
+    old_sessions = api_main.app.state.auth_sessions
     api_main.app.state.investigations = InvestigationStore()
-    with TestClient(api_main.app) as test_client:
-        yield test_client
-    api_main.app.state.investigations = old_store
+    api_main.app.state.auth_sessions = AuthSessionRegistry()
+    monkeypatch.setattr(api_main, "_graph_health", lambda: {
+        "connected": False, "host": "test", "port": "offline", "graph": "ringtrace",
+        "error": "graph disabled in API contract tests",
+    })
+
+    def disabled_graph():
+        raise RuntimeError("graph disabled in API contract tests")
+
+    monkeypatch.setattr(api_main, "get_graph", disabled_graph)
+    try:
+        with TestClient(api_main.app, base_url="http://localhost") as test_client:
+            yield test_client
+    finally:
+        api_main.app.state.investigations = old_store
+        api_main.app.state.auth_sessions = old_sessions
 
 
 def patch_investigator(monkeypatch, result=None, *, by_account=None):
@@ -104,6 +125,16 @@ def create_case(client, monkeypatch):
     response = client.post("/api/investigate", json={"account_id": "A1027"})
     assert response.status_code == 201
     return response.json()
+
+
+def sign_in(client, username="demo-analyst", password="test-only-password"):
+    response = client.post("/api/auth/login", json={"username": username, "password": password})
+    assert response.status_code == 200
+    return response.json()["csrf_token"]
+
+
+def action_headers(csrf_token):
+    return {"X-CSRF-Token": csrf_token}
 
 
 def test_api_health(client):
@@ -328,22 +359,27 @@ def test_decision_endpoint_returns_agent_verdict(client, monkeypatch):
 
 def test_approve_action_is_explicitly_simulated(client, monkeypatch):
     case = create_case(client, monkeypatch)
-    response = client.post(f"/api/actions/{case['case_id']}/approve")
+    csrf = sign_in(client)
+    response = client.post(f"/api/actions/{case['case_id']}/approve", headers=action_headers(csrf))
     assert response.status_code == 200
     assert response.json()["simulated"] is True
     assert response.json()["status"] == "approved"
+    assert response.json()["approved_by"] == "demo-analyst"
+    assert response.json()["approval_expires_at"]
 
 
 def test_approve_repeat_is_rejected(client, monkeypatch):
     case = create_case(client, monkeypatch)
+    csrf = sign_in(client)
     path = f"/api/actions/{case['case_id']}/approve"
-    assert client.post(path).status_code == 200
-    assert client.post(path).status_code == 409
+    assert client.post(path, headers=action_headers(csrf)).status_code == 200
+    assert client.post(path, headers=action_headers(csrf)).status_code == 409
 
 
 def test_execute_requires_prior_approval(client, monkeypatch):
     case = create_case(client, monkeypatch)
-    response = client.post(f"/api/actions/{case['case_id']}/execute", json={"confirmed": True})
+    csrf = sign_in(client)
+    response = client.post(f"/api/actions/{case['case_id']}/execute", json={"confirmed": True}, headers=action_headers(csrf))
     assert response.status_code == 409
     assert "Approve" in response.json()["detail"]
 
@@ -351,20 +387,49 @@ def test_execute_requires_prior_approval(client, monkeypatch):
 def test_execute_action_records_graph_write_and_is_single_use(client, monkeypatch):
     case = create_case(client, monkeypatch)
     monkeypatch.setattr(api_main, "_execute_graph_action", lambda record: ([{"ok": True, "tool": "create_investigation_case", "data": {"case_id": "CASE-1"}}], "CASE-1", "written"))
-    client.post(f"/api/actions/{case['case_id']}/approve")
+    csrf = sign_in(client)
+    headers = action_headers(csrf)
+    client.post(f"/api/actions/{case['case_id']}/approve", headers=headers)
     path = f"/api/actions/{case['case_id']}/execute"
-    unconfirmed = client.post(path, json={"confirmed": False})
+    unconfirmed = client.post(path, json={"confirmed": False}, headers=headers)
     assert unconfirmed.status_code == 409
     assert "confirm" in unconfirmed.json()["detail"].lower()
-    response = client.post(path, json={"confirmed": True})
+    response = client.post(path, json={"confirmed": True}, headers=headers)
     assert response.status_code == 200
     assert response.json()["graph_case_id"] == "CASE-1"
     assert response.json()["graph_write_status"] == "written"
-    assert client.post(path, json={"confirmed": True}).status_code == 409
+    assert response.json()["approved_by"] == "demo-analyst"
+    assert response.json()["executed_by"] == "demo-analyst"
+    assert client.post(path, json={"confirmed": True}, headers=headers).status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("graph_case_id", "write_status"),
+    [(None, "written"), ("CASE-UNVERIFIED", "unknown")],
+)
+def test_unverified_graph_write_is_never_reported_as_executed(client, monkeypatch, graph_case_id, write_status):
+    case = create_case(client, monkeypatch)
+    monkeypatch.setattr(
+        api_main,
+        "_execute_graph_action",
+        lambda _record: ([{"ok": True, "tool": "create_investigation_case", "data": {"case_id": graph_case_id}}], graph_case_id, write_status),
+    )
+    csrf = sign_in(client)
+    headers = action_headers(csrf)
+    client.post(f"/api/actions/{case['case_id']}/approve", headers=headers)
+    path = f"/api/actions/{case['case_id']}/execute"
+    response = client.post(path, json={"confirmed": True}, headers=headers)
+    assert response.status_code == 502
+    assert "failed" in response.json()["detail"].lower()
+    stored = client.get(f"/api/cases/{case['case_id']}").json()
+    assert stored["status"] == "action_failed"
+    assert stored["action"]["graph_write_status"] == "unknown"
+    assert client.post(path, json={"confirmed": True}, headers=headers).status_code == 409
 
 
 def test_unknown_case_action_is_404(client):
-    assert client.post("/api/actions/RT-MISSING/approve").status_code == 404
+    csrf = sign_in(client)
+    assert client.post("/api/actions/RT-MISSING/approve", headers=action_headers(csrf)).status_code == 404
 
 
 def test_failed_action_attempt_cannot_be_replayed(client, monkeypatch):
@@ -372,10 +437,59 @@ def test_failed_action_attempt_cannot_be_replayed(client, monkeypatch):
     def fail(_record):
         raise RuntimeError("database write failed")
     monkeypatch.setattr(api_main, "_execute_graph_action", fail)
-    client.post(f"/api/actions/{case['case_id']}/approve")
+    csrf = sign_in(client)
+    headers = action_headers(csrf)
+    client.post(f"/api/actions/{case['case_id']}/approve", headers=headers)
     path = f"/api/actions/{case['case_id']}/execute"
-    assert client.post(path, json={"confirmed": True}).status_code == 502
-    assert client.post(path, json={"confirmed": True}).status_code == 409
+    assert client.post(path, json={"confirmed": True}, headers=headers).status_code == 502
+    assert client.post(path, json={"confirmed": True}, headers=headers).status_code == 409
+
+
+@pytest.mark.parametrize("reported_api_case_id, should_pass", [("RT-EXPECTED", True), ("RT-OTHER", False)])
+def test_graph_action_requires_final_audit_bound_to_expected_api_case(monkeypatch, reported_api_case_id, should_pass):
+    case = {
+        "case_id": "RT-EXPECTED",
+        "account_id": "A1027",
+        "approval": {
+            "approved_by": "demo-analyst",
+            "approved_at": "2026-10-13T12:00:00+00:00",
+            "expires_at": "2026-10-13T12:05:00+00:00",
+        },
+        "action": {
+            "action_type": "ESCALATE_FOR_MANUAL_INVESTIGATION",
+            "execution_actor": "demo-analyst",
+            "started_at": "2026-10-13T12:01:00+00:00",
+        },
+        "result": {
+            "steps": [],
+            "verdict": {"recommended_action": "ESCALATE_FOR_MANUAL_INVESTIGATION"},
+        },
+    }
+    monkeypatch.setattr(api_main, "get_graph", lambda: object())
+    monkeypatch.setattr(api_main, "GraphStore", lambda _graph: object())
+    monkeypatch.setattr(api_main, "RiskScorer", lambda: object())
+    monkeypatch.setattr(api_main, "execute_recommended_action", lambda *_args: [
+        {"tool": "create_investigation_case", "ok": True, "data": {"case_id": "GRAPH-CASE-1"}},
+        {
+            "tool": "finalize_case_action_audit",
+            "ok": True,
+            "data": {
+                "case_id": "GRAPH-CASE-1",
+                "api_case_id": reported_api_case_id,
+                "action_outcome": "succeeded",
+                "graph_write_status": "written",
+            },
+        },
+    ])
+
+    if should_pass:
+        results, graph_case_id, write_status = api_main._execute_graph_action(case)
+        assert results
+        assert graph_case_id == "GRAPH-CASE-1"
+        assert write_status == "written"
+    else:
+        with pytest.raises(RuntimeError, match="expected case"):
+            api_main._execute_graph_action(case)
 
 
 def test_case_listing_is_available_when_graph_probe_fails(client, monkeypatch):

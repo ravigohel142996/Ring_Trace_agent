@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import type { CaseRecord, GraphExport, Scenario } from '../types';
+import type { AnalystSession, CaseRecord, GraphExport, Scenario } from '../types';
 import ActionCenter from '../components/ActionCenter';
 import EvidencePanel from '../components/EvidencePanel';
 import GraphCanvas from '../components/GraphCanvas';
@@ -11,6 +11,9 @@ interface Props {
   scenarios: Scenario[];
   cases: CaseRecord[];
   activeCase: CaseRecord | null;
+  authSession: AnalystSession;
+  authLoading: boolean;
+  onAuthExpired: () => void;
   loading: boolean;
   booting: boolean;
   error: string;
@@ -36,7 +39,7 @@ function formatTime(value: string) {
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-export default function InvestigatePage({ scenarios, cases, activeCase, loading, booting, error, onRun, onSelectCase, onDismissError, onViewCases, onUpdateCase }: Props) {
+export default function InvestigatePage({ scenarios, cases, activeCase, authSession, authLoading, onAuthExpired, loading, booting, error, onRun, onSelectCase, onDismissError, onViewCases, onUpdateCase }: Props) {
   const [accountId, setAccountId] = useState('A1027');
   const [scenarioId, setScenarioId] = useState('CASE-C');
   const [query, setQuery] = useState('Trace the connected accounts, money movement, and evidence supporting a risk decision.');
@@ -46,6 +49,7 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
   const selectedScenario = useMemo(() => scenarios.find((scenario) => scenario.id === scenarioId), [scenarios, scenarioId]);
   const verdict = activeCase?.result?.verdict;
   const steps = activeCase?.result?.steps || [];
+  const graphRecord = activeCase?.graph_record || {};
   const riskClass = verdict?.risk_class;
 
   useEffect(() => {
@@ -134,9 +138,17 @@ export default function InvestigatePage({ scenarios, cases, activeCase, loading,
               {activeCase.read_only ? <section className="panel why-panel durable-record-panel">
                 <div className="why-header"><div><div className="eyebrow">PERSISTED FALKORDB RECORD</div><h2>Read-only action summary</h2></div><span className="why-badge">DURABLE</span></div>
                 <p>{String(activeCase.graph_record?.notes || activeCase.result.narrative || 'No notes were stored with this graph case.')}</p>
-                <p className="muted">This record is separate from the process-local investigation session. Its approval state, original agent trace, feature vector, and graph snapshot are not stored here; execution and replay are unavailable from this view.</p>
+                <div className="durable-audit"><div className="eyebrow">STORED GRAPH AUDIT FIELDS</div><div className="durable-audit-grid">
+                  <div><span>ACTION</span><strong>{String(graphRecord.action_type || 'Not recorded')}</strong></div>
+                  <div><span>APPROVED BY</span><strong>{String(graphRecord.approved_by || 'Not recorded')}</strong></div>
+                  <div><span>APPROVED AT</span><strong>{String(graphRecord.approved_at || 'Not recorded')}</strong></div>
+                  <div><span>EXECUTED BY</span><strong>{String(graphRecord.execution_actor || 'Not recorded')}</strong></div>
+                  <div><span>EXECUTED AT</span><strong>{String(graphRecord.executed_at || 'Not recorded')}</strong></div>
+                  <div><span>OUTCOME / WRITE STATUS</span><strong>{`${String(graphRecord.action_outcome || 'Not recorded')} / ${String(graphRecord.graph_write_status || 'Not recorded')}`}</strong></div>
+                </div></div>
+                <p className="muted">This durable summary is read-only. The original agent trace, full approval history, feature vector, and historical graph snapshot are not stored here; execution and replay are unavailable from this view.</p>
               </section> : <WhyActionPanel result={activeCase.result}/>}
-              {activeCase.read_only ? <section className="panel action-center-panel durable-readonly-panel"><div className="action-center-header"><div><div className="eyebrow">ACTION CENTER</div><h2>Execution unavailable for durable records</h2></div><span className="simulated-action-badge"><i/> READ ONLY</span></div><p className="muted">This graph record may reflect a prior simulated action. The original API session and its approval token are not persisted, so it cannot be approved or replayed from this view.</p></section> : <ActionCenter record={activeCase} onUpdate={onUpdateCase}/>}
+              {activeCase.read_only ? <section className="panel action-center-panel durable-readonly-panel"><div className="action-center-header"><div><div className="eyebrow">ACTION CENTER</div><h2>Execution unavailable for durable records</h2></div><span className="simulated-action-badge"><i/> READ ONLY</span></div><p className="muted">This graph record may reflect a prior simulated action. The original API session and its approval token are not persisted, so it cannot be approved or replayed from this view.</p></section> : <ActionCenter key={activeCase.case_id} record={activeCase} authSession={authSession} authLoading={authLoading} onAuthExpired={onAuthExpired} onUpdate={onUpdateCase}/>}
               {activeCase.read_only ? <section className="panel evidence-panel"><div className="panel-heading compact"><div><div className="eyebrow">SOURCE RECORDS</div><h2>Historical investigation trace</h2></div></div><p className="evidence-empty">The durable graph case summary does not contain the original tool calls or query evidence.</p></section> : <EvidencePanel steps={steps}/>}
 
               <div className="panel trace-panel">

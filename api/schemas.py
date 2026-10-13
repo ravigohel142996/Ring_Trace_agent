@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictStr
 
 
 class ApiModel(BaseModel):
@@ -27,6 +27,7 @@ class InvestigationSummary(ApiModel):
     status: str
     result: dict[str, Any]
     approval: dict[str, Any] | None = None
+    approval_history: list[dict[str, Any]] = Field(default_factory=list)
     action: dict[str, Any] | None = None
     graph_case_id: str | None = None
 
@@ -44,16 +45,31 @@ class Scenario(ApiModel):
     risk_focus: str
 
 
+class AnalystLoginRequest(ApiModel):
+    username: StrictStr = Field(min_length=1, max_length=128)
+    password: SecretStr = Field(min_length=1, max_length=1024)
+
+
+class AnalystSessionResponse(ApiModel):
+    auth_enabled: bool
+    authenticated: bool
+    analyst: str | None = None
+    csrf_token: str | None = None
+    expires_at: str | None = None
+
+
 class ActionApprovalResponse(ApiModel):
     case_id: str
     status: str
     approved_at: str
+    approval_expires_at: str
+    approved_by: str
     recommended_action: str
     simulated: Literal[True] = True
 
 
 class ActionExecutionRequest(ApiModel):
-    confirmed: bool = Field(..., description="Explicit confirmation from the final simulated-action review.")
+    confirmed: StrictBool = Field(..., description="Explicit confirmation from the final simulated-action review.")
 
 
 class ActionExecutionResponse(ApiModel):
@@ -61,7 +77,10 @@ class ActionExecutionResponse(ApiModel):
     status: str
     executed_at: str
     action: str
-    graph_case_id: str | None = None
-    graph_write_status: str
+    approved_by: str
+    approved_at: str
+    executed_by: str
+    graph_case_id: str
+    graph_write_status: Literal["written"]
     results: list[dict[str, Any]]
     simulated: Literal[True] = True

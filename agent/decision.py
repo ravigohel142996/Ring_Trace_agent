@@ -14,6 +14,7 @@ yields a visibly different decision.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 
@@ -170,74 +171,238 @@ ACTION_DESCRIPTIONS = {
 
 
 def execute_recommended_action(ctx, account_id: str, verdict: dict) -> list[dict]:
-    """Executes (simulates) the recommended action by calling the matching
-    ACTION tools, writing real nodes/properties into FalkorDB. Returns the
-    list of resulting tool-result dicts (also appended to ctx.evidence_trail).
-    Always creates a Case first so every action is tied to an auditable
-    investigation record."""
-    from tools.base import REGISTRY  # local import avoids a module cycle at import time
+    """Run the simulated graph action and verify every required write.
 
+    FalkorDB mutations span multiple queries rather than one transaction. A
+    failed step therefore stops subsequent writes and leaves the case/action
+    audit at ``failed``/``unknown`` where possible; callers must not report a
+    successful graph write unless the final audit query confirms it.
+    """
+    from tools.base import REGISTRY, ToolResult  # local import avoids a module cycle
+
+    logger = logging.getLogger("ringtrace.agent.decision")
     action = verdict.get("recommended_action", "NO_ACTION_REQUIRED")
-    results = []
+    audit = dict(getattr(ctx, "action_audit", {}) or {})
+    results: list[dict] = []
+    gs = ctx.graph_store
+    case_id: str | None = None
+    action_id: str | None = None
 
-    def call(name, **kwargs):
-        spec = REGISTRY.get(name)
-        res = spec.run(ctx, **kwargs)
-        entry = res.to_dict()
+    def append_result(result: ToolResult) -> ToolResult:
+        entry = result.to_dict()
         ctx.evidence_trail.append(entry)
         results.append(entry)
-        return res
+        return result
 
+    def call(name: str, **kwargs) -> ToolResult:
+        spec = REGISTRY.get(name)
+        if spec is None:
+            return append_result(ToolResult(
+                ok=False, tool=name, summary=f"Required action tool '{name}' is unavailable.",
+                error="action_tool_unavailable",
+            ))
+        return append_result(spec.run(ctx, **kwargs))
+
+    def write_audit(action_outcome: str, error: str | None = None) -> ToolResult:
+        """Verify the final Case/Action audit write without guessing success."""
+        if not case_id:
+            return append_result(ToolResult(
+                ok=False, tool="finalize_case_action_audit",
+                summary="Cannot finalize an action without a persisted graph case.",
+                error="case_write_failed",
+            ))
+        finished_at = datetime.now(timezone.utc).isoformat()
+        graph_write_status = "written" if action_outcome == "succeeded" else "unknown"
+        try:
+            query_result = gs.finalize_case_action_audit(
+                case_id,
+                action_id=action_id,
+                action_outcome=action_outcome,
+                graph_write_status=graph_write_status,
+                execution_finished_at=finished_at,
+                executed_at=finished_at if action_outcome == "succeeded" else None,
+                error=(str(error)[:500] if error else None),
+            )
+            expected_action_id = action_id
+            if not query_result.data and action_id and action_outcome == "failed":
+                # If an Action node was only partially created, still mark the
+                # Case outcome failed/unknown when possible. Never use this
+                # recovery path to confirm a successful write.
+                expected_action_id = None
+                query_result = gs.finalize_case_action_audit(
+                    case_id,
+                    action_id=None,
+                    action_outcome=action_outcome,
+                    graph_write_status=graph_write_status,
+                    execution_finished_at=finished_at,
+                    executed_at=None,
+                    error=(str(error)[:500] if error else None),
+                )
+            row = query_result.data[0] if query_result.data else None
+            if not isinstance(row, (list, tuple)) or len(row) < 5:
+                raise RuntimeError("FalkorDB returned no completed action-audit record.")
+            data = {
+                "case_id": row[0],
+                "api_case_id": row[1],
+                "action_id": row[2],
+                "action_outcome": row[3],
+                "graph_write_status": row[4],
+            }
+            verified = (
+                data["case_id"] == case_id
+                and data["api_case_id"] == audit.get("api_case_id")
+                and data["action_id"] == expected_action_id
+                and data["action_outcome"] == action_outcome
+                and data["graph_write_status"] == graph_write_status
+            )
+            if action_outcome == "succeeded" and not verified:
+                raise RuntimeError("FalkorDB did not confirm the expected case/action audit values.")
+            if action_outcome == "failed" and not verified:
+                raise RuntimeError("FalkorDB did not confirm the failed action audit values.")
+            return append_result(ToolResult(
+                ok=(action_outcome == "succeeded" and verified),
+                tool="finalize_case_action_audit",
+                summary=("Verified completed graph action and audit write."
+                         if action_outcome == "succeeded" and verified
+                         else "Recorded a failed graph action; write-back is unverified."),
+                data=data,
+                evidence=[query_result.as_evidence()],
+                error=None if action_outcome == "succeeded" and verified else (str(error)[:500] if error else "action_audit_failed"),
+            ))
+        except Exception as exc:  # noqa: BLE001 — never turn an unverified write into success
+            logger.warning("finalize_case_action_audit failed for %s: %s", case_id, exc)
+            return append_result(ToolResult(
+                ok=False,
+                tool="finalize_case_action_audit",
+                summary="Could not verify the final graph action-audit write.",
+                error="action_audit_finalize_failed",
+            ))
+
+    def fail(error: str) -> list[dict]:
+        write_audit("failed", error)
+        return results
+
+    if audit and audit.get("action_type") != action:
+        append_result(ToolResult(
+            ok=False, tool="action_approval_binding",
+            summary="The approved action does not match the current server-side recommendation.",
+            error="approved_action_mismatch",
+        ))
+        return results
+
+    # The approval binds the investigation's server-stored recommendation;
+    # avoid recomputing a potentially different verdict during graph writes.
+    ctx.action_verdict = verdict
     reason = "; ".join(verdict.get("reasoning", [])) or verdict.get("verdict", "")
-
-    case_result = call("create_investigation_case", account_id=account_id,
-                        notes=f"Auto-generated from verdict: {verdict.get('verdict')}")
-    # Without a persisted case node there is no safe target for provenance or
-    # follow-on action writes. Preserve the structured failure and stop here.
+    case_result = call(
+        "create_investigation_case",
+        account_id=account_id,
+        notes=f"Auto-generated from verdict: {verdict.get('verdict')}",
+    )
     case_id = (case_result.data or {}).get("case_id") if case_result.ok else None
     if not case_id:
         return results
 
-    # ------------------------------------------------------------------
-    # Second-order evidence graph (additive): one GraphFinding + Evidence
-    # node per reasoning line, linked to the Case via SUPPORTED_BY, plus the
-    # reciprocal Account-[:HAS_CASE]->Case edge. This is what lets
-    # docs/DEMO_SCRIPT.md's sample Cypher query "what graph evidence
-    # supported this case?" and get a real answer straight from the graph.
-    gs = ctx.graph_store
-    findings = [{"id": f"{case_id}-F{i}", "tool": "generate_verdict", "summary": line}
-                for i, line in enumerate(verdict.get("reasoning", []))]
-    finding_ids = [f["id"] for f in findings]
+    # Evidence is part of the action write, not optional bookkeeping: if a
+    # query fails or returns fewer records than requested, stop and mark the
+    # audit outcome unknown rather than claiming a completed action.
+    findings = [
+        {"id": f"{case_id}-F{i}", "tool": "generate_verdict", "summary": line}
+        for i, line in enumerate(verdict.get("reasoning", []))
+    ]
+    finding_ids = [finding["id"] for finding in findings]
     if findings:
         try:
-            gs.attach_case_evidence(case_id, account_id, findings)
-        except Exception as exc:  # noqa: BLE001 — evidence-graph write is additive, never block the action
-            logging.getLogger("ringtrace.agent.decision").warning("attach_case_evidence failed: %s", exc)
+            evidence_write = gs.attach_case_evidence(case_id, account_id, findings)
+            evidence_count = evidence_write.data[0][0] if evidence_write.data and evidence_write.data[0] else 0
+            if int(evidence_count or 0) < len(findings):
+                return fail("case_evidence_write_incomplete")
+            append_result(ToolResult(
+                ok=True, tool="attach_case_evidence",
+                summary=f"Attached {int(evidence_count)} graph evidence records to the case.",
+                data={"evidence_count": int(evidence_count)},
+                evidence=[evidence_write.as_evidence()],
+            ))
+        except Exception as exc:  # noqa: BLE001 — evidence is required for the success audit
+            logger.warning("attach_case_evidence failed for %s: %s", case_id, exc)
+            append_result(ToolResult(
+                ok=False, tool="attach_case_evidence",
+                summary="Could not attach the investigation evidence to the graph case.",
+                error="case_evidence_write_failed",
+            ))
+            return fail("case_evidence_write_failed")
 
-    def record_action_node(action_type: str):
-        """Writes the generic (Case)-[:RESULTED_IN]->(Action)-[:TRIGGERED_BY]->(GraphFinding)
-        bookkeeping for whichever specific action tool(s) just ran."""
-        action_id = f"{case_id}-A-{action_type}"
+    if action not in {
+        "ESCALATE_FOR_MANUAL_INVESTIGATION",
+        "FLAG_AND_REQUEST_MANUAL_REVIEW",
+        "ADD_TO_WATCHLIST",
+        "NO_ACTION_REQUIRED",
+    }:
+        append_result(ToolResult(
+            ok=False, tool="action_dispatch",
+            summary=f"Unsupported simulated action '{action}'.",
+            error="unsupported_action",
+        ))
+        return fail("unsupported_action")
+
+    if action != "NO_ACTION_REQUIRED":
+        pending_action_id = f"{case_id}-A-{action}"
+        action_id = pending_action_id
         try:
-            gs.record_action_outcome(case_id, action_id, action_type, reason)
+            action_write = gs.record_action_outcome(
+                case_id, pending_action_id, action, reason, audit=audit
+            )
+            if not action_write.data:
+                raise RuntimeError("Action audit node was not returned by FalkorDB.")
+            action_id = pending_action_id
+            append_result(ToolResult(
+                ok=True, tool="record_action_outcome",
+                summary=f"Recorded pending action audit for {action}.",
+                data={"action_id": action_id}, evidence=[action_write.as_evidence()],
+            ))
             if finding_ids:
-                gs.link_action_to_findings(action_id, finding_ids)
+                finding_write = gs.link_action_to_findings(action_id, finding_ids)
+                finding_count = finding_write.data[0][0] if finding_write.data and finding_write.data[0] else 0
+                if int(finding_count or 0) < len(finding_ids):
+                    raise RuntimeError("Action-to-finding links were incomplete.")
+                append_result(ToolResult(
+                    ok=True, tool="link_action_to_findings",
+                    summary=f"Linked the action to {int(finding_count)} graph findings.",
+                    data={"finding_count": int(finding_count)}, evidence=[finding_write.as_evidence()],
+                ))
         except Exception as exc:  # noqa: BLE001
-            logging.getLogger("ringtrace.agent.decision").warning("record_action_outcome failed: %s", exc)
+            logger.warning("Action-audit graph write failed for %s: %s", case_id, exc)
+            append_result(ToolResult(
+                ok=False, tool="record_action_outcome",
+                summary="Could not complete the pending action-audit graph writes.",
+                error="action_audit_write_failed",
+            ))
+            return fail("action_audit_write_failed")
 
     if action == "ESCALATE_FOR_MANUAL_INVESTIGATION":
-        call("flag_account", account_id=account_id, reason=reason)
-        call("mark_high_risk", account_id=account_id, risk_score=verdict.get("risk_score", 0.9))
-        call("request_manual_review", account_id=account_id, reason=reason)
-        call("escalate_case", case_id=case_id, reason=reason)
-        record_action_node(action)
+        steps = [
+            ("flag_account", {"account_id": account_id, "reason": reason}),
+            ("mark_high_risk", {"account_id": account_id, "risk_score": verdict.get("risk_score", 0.9)}),
+            ("request_manual_review", {"account_id": account_id, "reason": reason}),
+            ("escalate_case", {"case_id": case_id, "reason": reason}),
+        ]
     elif action == "FLAG_AND_REQUEST_MANUAL_REVIEW":
-        call("flag_account", account_id=account_id, reason=reason)
-        call("request_manual_review", account_id=account_id, reason=reason)
-        record_action_node(action)
+        steps = [
+            ("flag_account", {"account_id": account_id, "reason": reason}),
+            ("request_manual_review", {"account_id": account_id, "reason": reason}),
+        ]
     elif action == "ADD_TO_WATCHLIST":
-        call("add_to_watchlist", entity_id=account_id, entity_type="Account", reason=reason)
-        record_action_node(action)
-    # NO_ACTION_REQUIRED -> the case + evidence graph record is the only artifact
+        steps = [(
+            "add_to_watchlist",
+            {"entity_id": account_id, "entity_type": "Account", "reason": reason},
+        )]
+    else:
+        steps = []
 
+    for tool_name, kwargs in steps:
+        result = call(tool_name, **kwargs)
+        if not result.ok:
+            return fail(result.error or result.summary or f"{tool_name}_failed")
+
+    write_audit("succeeded")
     return results

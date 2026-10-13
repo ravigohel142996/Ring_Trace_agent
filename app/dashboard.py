@@ -30,7 +30,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 import tools  # noqa: E402  (side-effect: registers all tools into REGISTRY)
-from agent.decision import ACTION_DESCRIPTIONS, execute_recommended_action  # noqa: E402
+from agent.decision import ACTION_DESCRIPTIONS  # noqa: E402
 from agent.investigator import Investigator  # noqa: E402
 from agent.report import build_case_report_markdown  # noqa: E402
 from app.graph_viz import build_investigation_network  # noqa: E402
@@ -92,7 +92,7 @@ def render_sidebar():
         st.markdown("---")
         st.warning("\u26A0\uFE0F All accounts, transactions, and identities in this demo are **100% synthetic**, "
                    "generated for this hackathon. No real individuals or financial systems are involved. "
-                   "All 'actions' below are simulated and only write to the demo graph.")
+                   "Simulated graph actions are available only through the authenticated API; this legacy view is read-only for actions.")
 
 
 def render_investigation_input():
@@ -222,16 +222,10 @@ def render_decision(result):
     st.markdown(f"**Recommended action:** `{action}`")
     st.caption(ACTION_DESCRIPTIONS.get(action, ""))
 
-    if st.button("\u26A1 Execute recommended action (simulated)", key="exec_action"):
-        inv = get_investigator()
-        ctx = inv.new_context()
-        ctx.evidence_trail = list(result.steps)
-        action_results = execute_recommended_action(ctx, result.account_id, verdict)
-        result.steps = ctx.evidence_trail
-        for r in action_results:
-            icon = "\u2705" if r["ok"] else "\u274C"
-            st.write(f"{icon} **{r['tool']}** — {r['summary']}")
-        st.success("Action(s) simulated and written to the graph (visible on re-investigation).")
+    st.warning(
+        "Direct graph actions are disabled in this legacy Streamlit view. "
+        "Use the authenticated React/API action flow to sign in, approve, and explicitly confirm an action."
+    )
 
 
 def render_case_report(result):

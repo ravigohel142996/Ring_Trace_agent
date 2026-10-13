@@ -5,7 +5,7 @@ import CasesPage from './pages/CasesPage';
 import GraphPage from './pages/GraphPage';
 import InvestigatePage from './pages/InvestigatePage';
 import RiskPage from './pages/RiskPage';
-import type { CaseRecord, GraphHealth, PageKey, Scenario } from './types';
+import type { AnalystSession, CaseRecord, GraphHealth, PageKey, Scenario } from './types';
 
 function pageFromPath(path: string): PageKey {
   if (path.startsWith('/cases')) return 'cases';
@@ -23,7 +23,45 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [booting, setBooting] = useState(true);
+  const [authSession, setAuthSession] = useState<AnalystSession>({ auth_enabled: false, authenticated: false });
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
 
+  const refreshAuth = useCallback(async () => {
+    setAuthLoading(true);
+    try {
+      const session = await api.authSession();
+      setAuthSession(session);
+      setAuthError('');
+      return session;
+    } catch {
+      const unavailable = { auth_enabled: true, authenticated: false };
+      setAuthSession(unavailable);
+      setAuthError('Session status is unavailable; action routes remain blocked until the API can be reached.');
+      return unavailable;
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const handleLogin = async (username: string, password: string) => {
+    const session = await api.login(username, password);
+    setAuthSession(session);
+    setAuthError('');
+  };
+
+  const handleLogout = async () => {
+    const csrf = authSession.csrf_token;
+    if (!csrf) throw new Error('The session CSRF token is unavailable. Refresh the session before signing out.');
+    try {
+      const session = await api.logout(csrf);
+      setAuthSession(session);
+      setAuthError('');
+    } catch (caught) {
+      await refreshAuth();
+      throw caught;
+    }
+  };
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -35,6 +73,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    void refreshAuth();
     Promise.all([api.scenarios().catch(() => []), api.cases().catch(() => ({ cases: [] })), api.graphHealth().catch(() => null)])
       .then(([scenarioData, caseData, health]) => {
         if (!alive) return;
@@ -49,7 +88,7 @@ export default function App() {
       alive = false;
       window.removeEventListener('popstate', onPopState);
     };
-  }, []);
+  }, [refreshAuth]);
 
   const navigate = (next: PageKey) => {
     const path = next === 'investigate' ? '/' : `/${next}`;
@@ -93,12 +132,25 @@ export default function App() {
   };
 
   return (
-    <AppShell page={page} graphHealth={graphHealth} caseCount={cases.length} onNavigate={navigate}>
+    <AppShell
+      page={page}
+      graphHealth={graphHealth}
+      caseCount={cases.length}
+      authSession={authSession}
+      authLoading={authLoading}
+      authError={authError}
+      onLogin={handleLogin}
+      onLogout={handleLogout}
+      onNavigate={navigate}
+    >
       {page === 'investigate' && (
         <InvestigatePage
           scenarios={scenarios}
           cases={cases}
           activeCase={activeCase}
+          authSession={authSession}
+          authLoading={authLoading}
+          onAuthExpired={() => { void refreshAuth(); }}
           loading={loading}
           booting={booting}
           error={error}

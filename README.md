@@ -413,12 +413,23 @@ in `evaluation/investigation_eval_report.json` (`false_negative_examples`).
 
 ## 11. Action system
 
-The agent doesn't just output a verdict — it **writes real, auditable graph
-mutations**, all explicitly simulation-only (no real system is ever
-contacted):
+The agent doesn't just output a verdict — it can **write simulated,
+auditable graph mutations** (no real financial system is contacted). The
+React/API flow is deliberately staged:
+
+1. A demo analyst signs in with the environment-configured credentials.
+2. `POST /api/actions/{case_id}/approve` records a short-lived approval tied
+to the exact case, recommended action, and authenticated analyst.
+3. `POST /api/actions/{case_id}/execute` requires that same analyst and the
+separate JSON confirmation `{ "confirmed": true }`. The approval is one-time;
+replay, expiry, identity mismatch, and missing confirmation are rejected.
+4. The API reports execution only after the graph layer returns the expected
+case ID and a verified final action-audit write.
+
+The underlying action tools are unchanged in purpose:
 
 ```
-verdict → execute_recommended_action()
+verdict → authenticated API approval → explicit execution confirmation
    ├─ create_investigation_case   (always)
    ├─ ESCALATE_FOR_MANUAL_INVESTIGATION → flag_account + mark_high_risk +
    │                                      request_manual_review + escalate_case
@@ -427,9 +438,43 @@ verdict → execute_recommended_action()
    └─ NO_ACTION_REQUIRED                 → (case record is the only artifact)
 ```
 
-Every action is immediately visible on re-investigation (the next
-`get_account_context` call will show the updated `flagged`/`status`
-properties) — the graph write-back is real, not a dashboard-only toast.
+Graph Case/Action records retain the API case ID, action type, approver,
+approval timestamp/expiry, execution actor, execution timestamp, outcome,
+and graph-write status when the relevant writes succeed. The React Action
+Center shows the server-returned actor metadata and only labels graph
+write-back **verified** when the API confirms `written` for the expected
+case ID. The legacy Streamlit direct-action button is disabled; it cannot
+bypass this API flow.
+
+### Demo authentication and write limitations
+
+Set `RINGTRACE_AUTH_SECRET` (at least 32 bytes),
+`RINGTRACE_DEMO_USERNAME`, and `RINGTRACE_DEMO_PASSWORD` in the environment
+or local `.env`. They have no built-in defaults; incomplete/invalid auth
+configuration fails closed for all action routes while read-only pages remain
+available. Generate a signing secret with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` and never commit
+real credentials. Sessions use an HttpOnly, SameSite=Lax signed cookie with
+Secure enabled by default, plus an API-provided CSRF token on every
+state-changing action request. Only a local plain-HTTP demo may explicitly set
+`RINGTRACE_AUTH_COOKIE_SECURE=false`; HTTPS requests remain Secure. The
+default session lifetime is eight hours, and approvals expire after five
+minutes; configure these periods with `RINGTRACE_SESSION_TTL_SECONDS` and
+`RINGTRACE_APPROVAL_TTL_SECONDS`.
+
+This is a **single-analyst hackathon demo**, not production identity
+management: credentials are one environment-configured username/password
+pair, session revocation and active API cases are process-local, and the app
+should run as one API worker. The graph action path spans multiple FalkorDB
+queries and has no cross-query transaction. If a step fails after earlier
+writes, the API marks the outcome unknown/failed where possible, blocks
+replay for that case, and instructs the analyst to inspect the graph before
+any manual recovery. Earlier graph mutations may remain; the UI must not
+claim write-back success in that situation.
+
+Every actual action remains synthetic and is immediately visible on
+re-investigation when its graph write succeeds; no real account or banking
+system is contacted.
 
 ## 12. Evidence model
 
@@ -503,25 +548,31 @@ performs on all of the above, measured against synthetic ground truth.
 ## 14. Screenshots
 
 No screenshots are bundled; mockups are not presented as real captures.
-The production React interface is served by FastAPI on port `8000`; its root,
-client-side routes, built JS/CSS assets, and live `/api/*` endpoints have
-been smoke-tested against the seeded FalkorDB graph. Use the setup below to
-open the actual running workspace. The existing screenshot helper targets
-the preserved Streamlit baseline and is not a React browser-test harness.
+The React interface is built with Vite and served by FastAPI on port `8000`.
+For the current security changes, the frontend build and no-graph API tests
+passed, but an authenticated graph-write browser smoke test was not possible
+without a disposable FalkorDB service (see Section 18). The existing
+screenshot helper targets the preserved Streamlit baseline and is not a React
+browser-test harness.
 
 ## 15. Setup
 
 ### Option A — Docker (recommended)
 
 ```bash
-cp .env.example .env     # optional; the rule-based agent needs no LLM key
+cp .env.example .env     # configure the demo analyst values to enable actions
 docker compose up --build
 ```
 
-Open **http://localhost:8000**. FastAPI serves both the React SPA and its
-`/api/*` routes on this single URL; FalkorDB stays private inside the Compose
-network. On first startup, the app loads the synthetic demo graph and trains
-the risk model if the graph is empty.
+To enable simulated actions, set `RINGTRACE_AUTH_SECRET` (at least 32 bytes),
+`RINGTRACE_DEMO_USERNAME`, and `RINGTRACE_DEMO_PASSWORD` in `.env` first.
+If left blank, read-only pages remain usable and all action routes fail
+closed. For plain local HTTP at `http://localhost:8000`, also set
+`RINGTRACE_AUTH_COOKIE_SECURE=false`; keep the default Secure cookie for
+HTTPS deployments. FastAPI serves both the React SPA and its `/api/*` routes
+on this single URL; FalkorDB stays private inside the Compose network. On
+first startup, the app loads the synthetic demo graph and trains the risk
+model if the graph is empty.
 
 ### Option B — Local development
 
@@ -529,6 +580,8 @@ the risk model if the graph is empty.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# Fill the signing secret and demo username/password to enable actions.
+# For plain local HTTP only, also set RINGTRACE_AUTH_COOKIE_SECURE=false.
 npm --prefix frontend ci
 npm --prefix frontend run build
 
@@ -574,11 +627,12 @@ Redis/FalkorDB and its optional browser UI are not published to the host by
 default, so the judge-facing app has one URL.
 
 **Honest disclosure:** Docker/Podman is not installed in this sandbox, so a
-container build/run has not been performed here. The Compose YAML, entrypoint
-shell syntax, production API, SPA routes/assets, graph-backed A1027
-investigation, and graph write-back were validated separately in the local
-environment. Validate the actual image with `docker compose up --build` on a
-host with Docker before deployment.
+container build/run has not been performed here. The Compose file now passes
+the explicit demo-auth environment variables into the API container; this
+change has not been exercised in a container. The frontend build and no-graph
+API tests are documented in Section 18. The prior disposable-graph baseline
+predates the current auth/audit changes; no current graph write-back result is
+claimed. Validate the image on a host with Docker before using the demo.
 
 ## 17. Environment variables
 
@@ -589,6 +643,11 @@ See `.env.example` for the full annotated list. Highlights:
 | `FALKORDB_HOST` / `FALKORDB_PORT` | Where to reach FalkorDB | `localhost:6379` |
 | `FALKORDB_GRAPH` | Graph name | `ringtrace` |
 | `FALKORDB_USERNAME` / `FALKORDB_PASSWORD` | Optional graph authentication | _(empty)_ |
+| `RINGTRACE_AUTH_SECRET` | Session-signing secret (minimum 32 bytes); missing/invalid disables action routes | _(empty; fail closed)_ |
+| `RINGTRACE_DEMO_USERNAME` / `RINGTRACE_DEMO_PASSWORD` | Environment-configured demo analyst credentials | _(empty; fail closed)_ |
+| `RINGTRACE_SESSION_TTL_SECONDS` | Signed session lifetime, 1–86400 seconds | `28800` |
+| `RINGTRACE_APPROVAL_TTL_SECONDS` | Approval validity, 1–3600 seconds | `300` |
+| `RINGTRACE_AUTH_COOKIE_SECURE` | Secure by default; `false` only opts out on local HTTP | `true` |
 | `LLM_PROVIDER` | `none` \| `groq` \| `openai` | `none` (rule-based fallback) |
 | `LLM_API_KEY` | API key — **never hardcoded**, read from env only | _(empty)_ |
 | `LLM_BASE_URL`, `LLM_MODEL` | OpenAI-compatible endpoint + model | Groq `llama-3.3-70b-versatile` |
@@ -597,48 +656,46 @@ See `.env.example` for the full annotated list. Highlights:
 
 ## 18. Testing
 
-Build the frontend and run the repository's explicit test directory. Graph-backed
-tests include mutations, so they require an explicitly opted-in disposable
-FalkorDB instance loaded with the synthetic demo graph. The harness refuses to
-probe or mutate port `6379` even if the opt-in flag is set; without a safe target,
-graph-dependent tests skip without connecting.
+Build the frontend and run the Python suite. Any test that performs graph
+writes must use the explicit disposable-graph opt-in and a reachable port other
+than `6379`; the harness skips graph-dependent tests without probing the
+live/default graph when no safe target is configured.
 
 ```bash
-npm --prefix frontend ci
 npm --prefix frontend run build
-# Configure the following variables for your disposable FalkorDB instance (not 6379):
+
+# Read-only/unit/API tests without a graph (graph-dependent tests skip):
+env -u RINGTRACE_TEST_DISPOSABLE -u FALKORDB_PORT -u FALKORDB_HOST \
+  -u FALKORDB_GRAPH .venv/bin/pytest tests/ -q
+
+# Only after verifying a disposable synthetic graph is listening on 6380:
 RINGTRACE_TEST_DISPOSABLE=1 FALKORDB_HOST=127.0.0.1 FALKORDB_PORT=6380 \
 FALKORDB_GRAPH=ringtrace PYTHONPATH=. pytest tests/ -q
 ```
 
-The validation run on a seeded disposable instance completed **74 tests, all
-passing**. Current coverage is split across:
+For this action-security hardening, the latest no-graph run completed **70
+passed, 30 skipped**. The 30 skipped cases are graph-dependent, including the
+real authenticated action-write/audit integration. A read-only health check to
+the configured safe test endpoint at `127.0.0.1:6380` returned connection
+refused because no disposable FalkorDB service is available. Docker and
+`redis-server` are not installed in this sandbox; port `6379` was never
+selected for an action-write test and was not mutated. Consequently, no current
+graph-write integration verification is claimed for these security changes.
+The earlier 74-pass disposable-graph result predates this hardening and does
+not validate the new auth/audit write path.
 
-- `test_api.py` (36) — FastAPI contracts, investigation/result routes,
-  graph/evidence/trace exports, server-enforced approval and explicit
-  confirmation, durable case summaries, built SPA routes/assets, and API
-  fallbacks.
-- `test_actions.py` (1) and `test_context.py` (1) — failed graph-case writes
-  stop follow-on actions, and graph IDs remain unique across independent
-  tool contexts.
-- `test_tools.py` (10) and `test_decision.py` (4) — graph tools, known
-  scenarios, and LOW/HIGH/CRITICAL outcomes from different graph structures.
-- `test_integration_falkordb.py` (16 collected cases across 12 test functions) —
-  real graph schema, parameterized transfer-total fan-out/zero-match regression,
-  graph-evidence guardrails, investigation fallback, and the persisted second-order action
-  trail (`HAS_CASE`, `SUPPORTED_BY`, `RESULTED_IN`, `TRIGGERED_BY`), all only
-  on the explicitly configured disposable graph.
-- `test_risk_scorer.py` (3) — unit coverage for graph-evidence guardrails.
-- `test_llm_loop_mocked.py` (3) — scripted LLM tool-calling loop, iteration
-  guard, and disallowed-action-tool rejection; no live LLM key required.
+`test_auth.py` covers missing/weak auth configuration, signed session cookie
+properties and expiry, CSRF, logout/revocation, case/action/analyst binding,
+approval expiry, explicit confirmation, and safe session handling. `test_api.py`
+checks the protected API responses and server-derived actor fields;
+`test_actions.py` checks fail-closed graph-result handling;
+`test_legacy_actions.py` prevents the direct Streamlit bypass from returning.
+The integration tests in `test_integration_falkordb.py` remain guarded by the
+disposable-graph fixture, including the corrected transfer-aggregation
+fan-out regression and the authenticated graph-audit/write verification.
 
-The previously recorded application smoke check covered FastAPI-served `/`,
-`/cases`, `/risk`, `/graph`, built JS assets, `/api/health`, graph health, an
-A1027 investigation, graph/evidence/trace exports, and normalized read-only
-durable case records. For this P0 task, the real investigations and the
-approval/confirmation/write-back simulation were run against the disposable
-FalkorDB instance only. API tests verify that execution is rejected unless
-both approval and explicit confirmation are present.
+The frontend TypeScript check and production Vite build completed successfully
+with `npm --prefix frontend run build`.
 
 ## 19. Evaluation
 
@@ -696,13 +753,18 @@ runs a full investigation per sampled account).
   evidence of its own may legitimately score LOW despite being ground-truth
   fraud — an intentional guardrail tradeoff against guilt-by-association,
   reported honestly in the evaluation output rather than tuned away.
-- The production routes and built assets have been HTTP-smoke-tested, but
-  no browser screenshot is bundled and the Docker image has not been built
-  in this sandbox (Docker is not installed); see [Sections 14](#14-screenshots)
-  and [16](#16-docker).
-- The API's active investigation index is process-local; action/evidence
-  writes are durable in FalkorDB, but there is no user authentication or
-  multi-tenant case-management layer. This remains a single-investigator demo.
+- No browser screenshot or Docker image build is available from this sandbox.
+  The current frontend build and no-graph API suite passed, but the new
+  authenticated graph-write path lacks a current disposable-graph smoke test;
+  see [Sections 14](#14-screenshots), [16](#16-docker), and [18](#18-testing).
+- Demo analyst authentication is an environment-configured single username/
+  password pair, not production identity management, multi-factor auth, or a
+  multi-tenant case-management system. Session revocation and active API cases
+  are process-local; use one API worker. Durable graph action writes are
+  multi-query and not transactional: an interrupted sequence may leave partial
+  graph changes, so inspect the graph before any manual recovery. The API
+  blocks replay and reports write-back as unknown unless the final audit write
+  is confirmed.
 
 ## 21. Future roadmap
 
@@ -713,8 +775,9 @@ runs a full investigation per sampled account).
 - Tighten the legit background population's circle isolation so raw
   component size is a cleaner signal on its own (currently compensated for,
   not eliminated, by the ring-score composite — see Section 19).
-- Multi-tenant case management + auth for the dashboard (explicitly
-  deprioritized for this submission).
+- A shared durable session/approval store and proper analyst identity
+  management; the current environment-configured demo gate is intentionally
+  single-user and process-local.
 - A CI pipeline running the full test suite + static Docker validation on
   every push (also explicitly deprioritized for this submission in favor of
   P0/P1 feature work).
@@ -738,7 +801,7 @@ ringtrace/
 ├── data/           Generated CSVs + evaluation-only synthetic ground truth
 ├── evaluation/     Classifier metrics + full-pipeline investigation metrics
 ├── reports/        Generated case reports (git-ignored)
-├── tests/          68 tests across API, action safety, tools, scoring, and graph integration
+├── tests/          100 Python tests across auth, API, action safety, tools, scoring, and guarded graph integration
 ├── scripts/        FalkorDB setup, pipeline, and legacy Streamlit screenshot helper
 ├── docker/         Multi-stage frontend build, FastAPI runtime entrypoint
 ├── docs/           Demo script, status notes, and project documentation

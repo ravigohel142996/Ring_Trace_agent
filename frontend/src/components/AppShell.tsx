@@ -1,11 +1,17 @@
 import type { ReactNode } from 'react';
-import type { GraphHealth, PageKey } from '../types';
+import type { AnalystSession, GraphHealth, PageKey } from '../types';
+import AuthControl from './AuthControl';
 import { Icon } from './Icon';
 
 interface AppShellProps {
   page: PageKey;
   graphHealth: GraphHealth | null;
   caseCount: number;
+  authSession: AnalystSession;
+  authLoading: boolean;
+  authError: string;
+  onLogin: (username: string, password: string) => Promise<void>;
+  onLogout: () => Promise<void>;
   onNavigate: (page: PageKey) => void;
   children: ReactNode;
 }
@@ -17,7 +23,7 @@ const navItems: { key: PageKey; label: string; icon: Parameters<typeof Icon>[0][
   { key: 'graph', label: 'Graph explorer', icon: 'graph' },
 ];
 
-export default function AppShell({ page, graphHealth, caseCount, onNavigate, children }: AppShellProps) {
+export default function AppShell({ page, graphHealth, caseCount, authSession, authLoading, authError, onLogin, onLogout, onNavigate, children }: AppShellProps) {
   return (
     <div className="app-frame">
       <aside className="sidebar">
@@ -53,8 +59,7 @@ export default function AppShell({ page, graphHealth, caseCount, onNavigate, chi
           <div className="topbar-right">
             <span className="topbar-badge"><span className={`status-dot ${graphHealth?.connected ? 'is-live' : ''}`} />{graphHealth?.connected ? 'LIVE GRAPH' : 'GRAPH OFFLINE'}</span>
             <span className="topbar-divider" />
-            <span className="operator-avatar">RT</span>
-            <span className="operator-name">Analyst console</span>
+            <AuthControl session={authSession} loading={authLoading} statusError={authError} onLogin={onLogin} onLogout={onLogout} />
           </div>
         </header>
         <main className="page-content">{children}</main>

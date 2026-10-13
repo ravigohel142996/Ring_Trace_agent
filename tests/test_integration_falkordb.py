@@ -22,6 +22,11 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
+
+import api.main as api_main
+from api.auth import AuthSessionRegistry
+from api.store import InvestigationStore
 
 from graph.connection import GraphConnectionError, health_check
 from graph.queries import GraphStore
@@ -292,6 +297,91 @@ def test_execute_recommended_action_writes_evidence_graph(graph_store, risk_scor
     )
     assert action_chain.result_set
     assert action_chain.result_set[0][1] > 0
+
+
+@requires_graph
+def test_authenticated_api_action_persists_server_actor_and_verified_outcome(graph_store, monkeypatch):
+    """End-to-end write verification is allowed only on the disposable graph fixture."""
+    from agent.investigator import Investigator
+
+    monkeypatch.setenv("RINGTRACE_AUTH_SECRET", "disposable-test-secret-for-action-audit-2026")
+    monkeypatch.setenv("RINGTRACE_DEMO_USERNAME", "disposable-test-analyst")
+    monkeypatch.setenv("RINGTRACE_DEMO_PASSWORD", "disposable-test-password")
+    monkeypatch.setenv("RINGTRACE_APPROVAL_TTL_SECONDS", "300")
+    monkeypatch.setenv("RINGTRACE_SESSION_TTL_SECONDS", "28800")
+    monkeypatch.setenv("RINGTRACE_AUTH_COOKIE_SECURE", "false")  # local disposable TestClient
+    old_store = api_main.app.state.investigations
+    old_sessions = api_main.app.state.auth_sessions
+    api_main.app.state.investigations = InvestigationStore()
+    api_main.app.state.auth_sessions = AuthSessionRegistry()
+    try:
+        result = Investigator().investigate(account_id="A1027")
+        assert result.error is None
+        record = api_main.app.state.investigations.create(
+            result.account_id or "A1027", api_main._serialize_result(result)
+        )
+        with TestClient(api_main.app, base_url="http://localhost") as client:
+            login = client.post("/api/auth/login", json={
+                "username": "disposable-test-analyst",
+                "password": "disposable-test-password",
+            })
+            assert login.status_code == 200
+            csrf = login.json()["csrf_token"]
+            headers = {"X-CSRF-Token": csrf}
+
+            approval = client.post(f"/api/actions/{record['case_id']}/approve", headers=headers)
+            assert approval.status_code == 200
+            approved = approval.json()
+            assert approved["approved_by"] == "disposable-test-analyst"
+
+            execution = client.post(
+                f"/api/actions/{record['case_id']}/execute",
+                json={"confirmed": True},
+                headers=headers,
+            )
+            assert execution.status_code == 200, execution.text
+            written = execution.json()
+            assert written["status"] == "executed"
+            assert written["case_id"] == record["case_id"]
+            assert written["executed_by"] == "disposable-test-analyst"
+            assert written["graph_write_status"] == "written"
+            assert written["graph_case_id"]
+
+            stored = graph_store.get_case(written["graph_case_id"])
+            assert stored.data and isinstance(stored.data[0][0], dict)
+            graph_case = stored.data[0][0]
+            assert graph_case["api_case_id"] == record["case_id"]
+            assert graph_case["approved_by"] == "disposable-test-analyst"
+            assert graph_case["approved_at"] == approved["approved_at"]
+            assert graph_case["approval_expires_at"] == approved["approval_expires_at"]
+            assert graph_case["execution_actor"] == "disposable-test-analyst"
+            assert graph_case["execution_started_at"]
+            assert graph_case["executed_at"]
+            assert graph_case["action_outcome"] == "succeeded"
+            assert graph_case["graph_write_status"] == "written"
+
+            action_rows = graph_store.graph.query(
+                "MATCH (c:Case {id: $case_id})-[:RESULTED_IN]->(ac:Action) RETURN ac {.*} AS action",
+                {"case_id": written["graph_case_id"]},
+            ).result_set
+            assert action_rows and isinstance(action_rows[0][0], dict)
+            action = action_rows[0][0]
+            assert action["api_case_id"] == record["case_id"]
+            assert action["action_type"] == written["action"]
+            assert action["approved_by"] == written["approved_by"]
+            assert action["execution_actor"] == written["executed_by"]
+            assert action["action_outcome"] == "succeeded"
+            assert action["graph_write_status"] == "written"
+
+            replay = client.post(
+                f"/api/actions/{record['case_id']}/execute",
+                json={"confirmed": True},
+                headers=headers,
+            )
+            assert replay.status_code == 409
+    finally:
+        api_main.app.state.investigations = old_store
+        api_main.app.state.auth_sessions = old_sessions
 
 
 # ---------------------------------------------------------------------------

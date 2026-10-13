@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from graph.queries import GraphStore
 from models.features import GraphFeatureCache
@@ -20,6 +21,8 @@ class ToolContext:
     graph_store: GraphStore
     risk_scorer: RiskScorer
     evidence_trail: list = field(default_factory=list)
+    action_audit: dict[str, Any] = field(default_factory=dict)
+    action_verdict: dict[str, Any] | None = None
     _feature_cache: GraphFeatureCache | None = None
 
     def feature_cache(self) -> GraphFeatureCache:
