@@ -36,7 +36,9 @@ export interface Verdict {
   reasoning?: string[];
   ring_members?: string[];
   ring_leader?: string | null;
-  ring_score?: number;
+  ring_score?: number | null;
+  ring_confidence?: number | null;
+  ring_evidence_status?: 'observed' | 'query_failed' | 'not_collected';
   risk_method?: string;
   [key: string]: unknown;
 }

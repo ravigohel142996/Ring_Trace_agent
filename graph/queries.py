@@ -393,9 +393,9 @@ class GraphStore:
             "Broker": "ROUTED_THROUGH",
             "Person": "OWNS",
         }[label]
-        direction = "<-" if label == "Person" else "<-"
+        relationship_pattern = f"-[:{rel}]->" if label == "Person" else f"<-[:{rel}]-"
         cypher = f"""
-        MATCH (n:{label} {{id: $id}})<-[:{rel}]-(a:Account)
+        MATCH (n:{label} {{id: $id}}){relationship_pattern}(a:Account)
         RETURN n {{.*}} AS entity, collect(DISTINCT a.id) AS connected_accounts, count(DISTINCT a) AS account_count
         """
         return self._run(cypher, {"id": entity_id})

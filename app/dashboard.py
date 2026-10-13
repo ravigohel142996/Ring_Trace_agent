@@ -277,9 +277,22 @@ def render_why_this_action(result):
 
     with c1:
         st.markdown("#### \U0001F4CA 1. GRAPH FACTS")
-        st.metric("Connected component size", len(verdict.get("ring_members", [result.account_id])))
-        st.metric("Ring score (composite)", f"{verdict.get('ring_score', 0.0):.2f}")
-        st.metric("Ring confidence", f"{verdict.get('ring_confidence', 0.0):.2f}")
+        ring_observed = verdict.get("ring_evidence_status", "observed") == "observed"
+        component_size = (
+            len(verdict.get("ring_members") or [result.account_id])
+            if ring_observed else "Unavailable"
+        )
+        ring_score = verdict.get("ring_score")
+        ring_confidence = verdict.get("ring_confidence")
+        st.metric("Connected component size", component_size)
+        st.metric(
+            "Ring score (composite)",
+            f"{ring_score:.2f}" if ring_observed and isinstance(ring_score, (int, float)) else "Unavailable",
+        )
+        st.metric(
+            "Ring confidence",
+            f"{ring_confidence:.2f}" if ring_observed and isinstance(ring_confidence, (int, float)) else "Unavailable",
+        )
         if verdict.get("ring_leader"):
             st.caption(f"\U0001F451 Ring leader (PageRank): **{verdict['ring_leader']}**")
         if verdict.get("money_path"):

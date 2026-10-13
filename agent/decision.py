@@ -40,7 +40,11 @@ def _all_matching(evidence_trail: list[dict], tool_name: str) -> list[dict]:
 def build_verdict(ctx, account_id: str) -> dict:
     trail = getattr(ctx, "evidence_trail", [])
 
-    ring_entry = _latest(trail, "find_fraud_ring")
+    ring_attempt = next((entry for entry in reversed(trail)
+                         if entry.get("tool") == "find_fraud_ring"), None)
+    # Use the latest attempt, not the latest successful result: a later failed
+    # query invalidates an earlier component snapshot for this verdict.
+    ring_entry = ring_attempt if ring_attempt and ring_attempt.get("ok") else None
     leader_entry = _latest(trail, "rank_ring_leaders")
     identity_entry = _latest(trail, "find_identity_links")
     money_entries = _all_matching(trail, "trace_money_path")
@@ -55,12 +59,23 @@ def build_verdict(ctx, account_id: str) -> dict:
         risk_data = risk_entry["data"]
 
     ring_data = (ring_entry or {}).get("data", {}) or {}
-    component_size = ring_data.get("size", 1)
-    is_ring = ring_data.get("is_ring", False)
-    ring_members = ring_data.get("members", [account_id])
-    ring_score = ring_data.get("ring_score", 0.0)
-    ring_confidence = ring_data.get("ring_confidence", 0.0)
-    ring_reasons = ring_data.get("ring_reasons", [])
+    ring_evidence_status = (
+        "observed" if ring_entry else "query_failed" if ring_attempt else "not_collected"
+    )
+    if ring_entry:
+        component_size = ring_data.get("size", 1)
+        ring_members = ring_data.get("members", [account_id])
+        ring_score = ring_data.get("ring_score", 0.0)
+        ring_confidence = ring_data.get("ring_confidence", 0.0)
+        ring_reasons = ring_data.get("ring_reasons", [])
+    else:
+        # Missing/failed component evidence is unknown, not proof of an
+        # isolated account or a measured zero ring score.
+        component_size = None
+        ring_members = []
+        ring_score = None
+        ring_confidence = None
+        ring_reasons = []
 
     leader_data = (leader_entry or {}).get("data", {}) or {}
     ring_leader = leader_data.get("ring_leader")
@@ -87,7 +102,13 @@ def build_verdict(ctx, account_id: str) -> dict:
     # worked example exactly).
     # ------------------------------------------------------------------
     reasoning: list[str] = []
-    if component_size > 1:
+    if ring_evidence_status == "query_failed":
+        reasoning.append(f"Ring-analysis evidence for {account_id} is unavailable because "
+                          "the latest find_fraud_ring call did not succeed.")
+    elif ring_evidence_status == "not_collected":
+        reasoning.append(f"Ring-analysis evidence for {account_id} was not collected; "
+                          "ring membership is unknown.")
+    elif component_size > 1:
         reasoning.append(f"{component_size} accounts are in the same connected component "
                           f"({', '.join(ring_members[:12])}{'...' if len(ring_members) > 12 else ''}). "
                           f"Ring score = {ring_score:.2f} (confidence {ring_confidence:.2f}).")
@@ -119,13 +140,22 @@ def build_verdict(ctx, account_id: str) -> dict:
     # Confidence now blends BOTH raw component size and the richer ring_score
     # composite (size alone can't distinguish a dense, corroborated ring from
     # a large but loosely-connected one).
-    ring_strength = max(min(component_size / 9, 1.0), ring_score)
+    ring_strength = (
+        max(min(component_size / 9, 1.0), ring_score)
+        if ring_evidence_status == "observed" else 0.0
+    )
     if risk_class == "CRITICAL":
-        verdict = "FRAUD RING CONFIRMED"
+        verdict = (
+            "FRAUD RING CONFIRMED" if ring_evidence_status == "observed"
+            else "CRITICAL RISK — RING EVIDENCE UNVERIFIED"
+        )
         action = "ESCALATE_FOR_MANUAL_INVESTIGATION"
         confidence = min(0.99, 0.75 + 0.2 * ring_strength)
     elif risk_class == "HIGH":
-        verdict = "SUSPICIOUS — LIKELY RING MEMBER"
+        verdict = (
+            "SUSPICIOUS — LIKELY RING MEMBER" if ring_evidence_status == "observed"
+            else "HIGH RISK — RING EVIDENCE UNVERIFIED"
+        )
         action = "FLAG_AND_REQUEST_MANUAL_REVIEW"
         confidence = 0.65 + 0.1 * ring_strength
     elif risk_class == "MEDIUM":
@@ -149,6 +179,7 @@ def build_verdict(ctx, account_id: str) -> dict:
         "ring_leader": ring_leader,
         "ring_score": ring_score,
         "ring_confidence": ring_confidence,
+        "ring_evidence_status": ring_evidence_status,
         "ring_reasons": ring_reasons,
         "money_path": best_money_path,
         "shared_device_account_count": len(shared_device_accounts),
