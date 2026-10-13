@@ -1,7 +1,12 @@
 import type { InvestigationResult, ToolStep } from '../types';
 
+function latestToolStep(steps: ToolStep[], name: string) {
+  return [...steps].reverse().find((step) => step.tool === name);
+}
+
 function toolData(steps: ToolStep[], name: string) {
-  return [...steps].reverse().find((step) => step.tool === name && step.ok)?.data || {};
+  const step = latestToolStep(steps, name);
+  return step?.ok ? step.data || {} : {};
 }
 
 function countList(value: unknown) {
@@ -10,12 +15,25 @@ function countList(value: unknown) {
 
 export default function WhyActionPanel({ result }: { result: InvestigationResult }) {
   const steps = result.steps || [];
+  const contextStep = latestToolStep(steps, 'get_account_context');
+  const ringStep = latestToolStep(steps, 'find_fraud_ring');
+  const rankingStep = latestToolStep(steps, 'rank_ring_leaders');
+  const pathStep = latestToolStep(steps, 'trace_money_path');
+  const identityStep = latestToolStep(steps, 'find_identity_links');
   const context = toolData(steps, 'get_account_context');
   const ring = toolData(steps, 'find_fraud_ring');
   const ranking = toolData(steps, 'rank_ring_leaders');
-  const paths = (toolData(steps, 'trace_money_path').paths || []) as Array<Record<string, unknown>>;
+  const pathData = toolData(steps, 'trace_money_path');
+  const paths = (Array.isArray(pathData.paths) ? pathData.paths : []) as Array<Record<string, unknown>>;
   const identity = toolData(steps, 'find_identity_links');
   const verdict = result.verdict;
+  const riskScore = typeof verdict.risk_score === 'number' && Number.isFinite(verdict.risk_score)
+    ? (verdict.risk_score * 100).toFixed(1)
+    : '—';
+  const confidence = typeof verdict.confidence === 'number' && Number.isFinite(verdict.confidence)
+    ? `${Math.round(verdict.confidence * 100)}%`
+    : 'NOT SUPPLIED';
+  const riskClass = typeof verdict.risk_class === 'string' ? verdict.risk_class : null;
   const bestPath = [...paths].sort((a, b) => Number(b.hops || 0) - Number(a.hops || 0))[0];
   const sharedDevicePairs = Number((ring.ring_signal_raw as Record<string, unknown> | undefined)?.shared_device_pairs || 0);
   const sharedIpPairs = Number((ring.ring_signal_raw as Record<string, unknown> | undefined)?.shared_ip_pairs || 0);
@@ -27,30 +45,61 @@ export default function WhyActionPanel({ result }: { result: InvestigationResult
   const actualTools = steps.filter((step) => step.ok).map((step) => step.tool);
   const reasoning = verdict.reasoning || [];
 
-  const facts = [
-    `${Number(ring.size || 0) || 1} account(s) in the observed component`,
-    `${sharedDevicePairs} shared-device pair(s) · ${sharedIpPairs} shared-IP pair(s) · ${sharedDeviceCount} direct device link(s) · ${sharedIpCount} direct IP link(s)`, 
-    bestPath ? `${Number(bestPath.hops || 0)}-hop money path observed` : 'No money path returned',
-    `${countList(context.alerts)} target alert(s) · ${countList(context.outgoing_transfers)} outgoing transfer(s)`,
-  ];
+  const outgoingTransfers = Array.isArray(context.outgoing_transfers) ? context.outgoing_transfers as Array<Record<string, unknown>> : [];
+  const incomingTransfers = Array.isArray(context.incoming_transfers) ? context.incoming_transfers as Array<Record<string, unknown>> : [];
+  const transferTotal = (transfers: Array<Record<string, unknown>>) => transfers.reduce((total, transfer) => {
+    const amount = Number(transfer.amount || 0);
+    return total + (Number.isFinite(amount) ? amount : 0);
+  }, 0);
+  const outgoingTotal = transferTotal(outgoingTransfers);
+  const incomingTotal = transferTotal(incomingTransfers);
+  const money = (amount: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(amount);
+  const queryState = (step: ToolStep | undefined) => step ? (step.ok ? 'returned no result' : 'query failed') : 'not queried';
+  const componentFact = ringStep?.ok
+    ? `${Number(ring.size || 0) || 1} account(s) in the observed component`
+    : `Component result unavailable: ${queryState(ringStep)}`;
+  const identityFact = [
+    ringStep?.ok
+      ? `${sharedDevicePairs} shared-device pair(s) · ${sharedIpPairs} shared-IP pair(s)`
+      : `Shared-pair counts ${queryState(ringStep)}`,
+    identityStep?.ok
+      ? `${sharedDeviceCount} direct device link(s) · ${sharedIpCount} direct IP link(s)`
+      : `Direct identity links ${queryState(identityStep)}`,
+  ].join(' · ');
+  const outgoingFact = contextStep?.ok
+    ? `${outgoingTransfers.length} outgoing transfer(s) · ${money(outgoingTotal)}`
+    : `Outgoing transfers unavailable: account context ${queryState(contextStep)}`;
+  const incomingFact = contextStep?.ok
+    ? `${incomingTransfers.length} incoming transfer(s) · ${money(incomingTotal)}`
+    : `Incoming transfers unavailable: account context ${queryState(contextStep)}`;
+  const moneyPathFact = bestPath
+    ? `${Number(bestPath.hops || 0)}-hop money path observed`
+    : pathStep?.ok ? 'No money path found by the successful graph query' : `Money-path result unavailable: ${queryState(pathStep)}`;
+  const alertsFact = contextStep?.ok
+    ? `${countList(context.alerts)} target alert(s)`
+    : `Target alerts unavailable: account context ${queryState(contextStep)}`;
+  const facts = [componentFact, identityFact, outgoingFact, incomingFact, moneyPathFact, alertsFact];
+  const leaderFact = leader
+    ? <>PageRank leader <strong>{leader}</strong></>
+    : `PageRank leader ${queryState(rankingStep)}`;
 
   return <section className="panel why-panel">
     <div className="why-header"><div><div className="eyebrow">DECISION PROVENANCE</div><h2>Why did RingTrace take this action?</h2></div><span className="why-badge">AUDITABLE</span></div>
     <div className="why-flow">
       <article className="why-step">
-        <span className="why-index">01</span><div className="why-content"><div className="why-title">GRAPH FACTS <small>FROM FALKORDB</small></div><ul>{facts.map((fact) => <li key={fact}>{fact}</li>)}</ul>{leader && <div className="why-leader">PageRank leader <strong>{leader}</strong></div>}</div>
+        <span className="why-index">01</span><div className="why-content"><div className="why-title">OBSERVED GRAPH FACTS <small>FROM FALKORDB</small></div><ul>{facts.map((fact) => <li key={fact}>{fact}</li>)}</ul><div className="why-leader">{leaderFact}</div></div>
       </article>
       <article className="why-step">
         <span className="why-index">02</span><div className="why-content"><div className="why-title">TOOLS USED <small>{actualTools.length} SUCCESSFUL CALLS</small></div><div className="why-tools">{actualTools.map((tool) => <code key={tool}>{tool}</code>)}</div></div>
       </article>
       <article className="why-step">
-        <span className="why-index">03</span><div className="why-content"><div className="why-title">EVIDENCE <small>{evidenceCount} QUERY RECORDS · {featureCount} GRAPH FEATURES</small></div><p>{reasoning.slice(0, 3).join(' ') || 'No written reasoning was returned by the decision engine.'}</p></div>
+        <span className="why-index">03</span><div className="why-content"><div className="why-title">EVIDENCE + DECISION REASONING <small>{evidenceCount} QUERY RECORDS · {featureCount} GRAPH FEATURES</small></div><p>{reasoning.slice(0, 3).join(' ') || 'No written reasoning was returned by the decision engine.'}</p></div>
       </article>
       <article className="why-step why-decision-step">
-        <span className="why-index">04</span><div className="why-content"><div className="why-title">RISK <small>{verdict.risk_method || 'GRAPH-DERIVED'}</small></div><div className="why-risk"><strong>{(Number(verdict.risk_score || 0) * 100).toFixed(1)}</strong><span>/ 100</span><b className={`risk-text-${String(verdict.risk_class).toLowerCase()}`}>{verdict.risk_class}</b></div></div>
+        <span className="why-index">04</span><div className="why-content"><div className="why-title">FINAL RISK <small>{verdict.risk_method || 'GRAPH-DERIVED'} · BACKEND SCORE</small></div><div className="why-risk"><strong>{riskScore}</strong><span>/ 100</span><b className={riskClass ? `risk-text-${riskClass.toLowerCase()}` : undefined}>{riskClass || 'NOT RETURNED'}</b></div></div>
       </article>
       <article className="why-step why-decision-step">
-        <span className="why-index">05</span><div className="why-content"><div className="why-title">DECISION <small>{Math.round(Number(verdict.confidence || 0) * 100)}% CONFIDENCE</small></div><strong className="why-verdict">{verdict.verdict}</strong></div>
+        <span className="why-index">05</span><div className="why-content"><div className="why-title">DECISION <small>SYSTEM CONFIDENCE · UNCALIBRATED · {confidence}</small></div><strong className="why-verdict">{verdict.verdict}</strong></div>
       </article>
       <article className="why-step why-action-step">
         <span className="why-index">06</span><div className="why-content"><div className="why-title">ACTION <small>SIMULATED · HUMAN-APPROVED</small></div><strong className="why-action">{verdict.recommended_action.replaceAll('_', ' ')}</strong></div>
