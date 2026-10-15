@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🕵️ RingTrace — Fraud-Ring Detective Agent
+# 🕵️ RingTrace Fraud-Ring Detective Agent
 
 ### **Follow the graph. Trace the money. Respect the clock.**
 
@@ -1283,21 +1283,12 @@ ngrok http 8000
 
 ### Team
 
-**Ravi Gohel**  
+**Ravi Gohel**
 - Role: Lead Developer & Architect
 - Responsibilities: System architecture, FalkorDB integration, agent design, security hardening
-- GitHub: [@ravigohel142996](https://github.com/ravigohel142996)
 
-### AI Assistance Disclosure
-
-This project was developed with AI coding assistance from **Arena Agent Mode**. The AI helped with:
-- Event-day graph layer implementation
-- Deterministic planner and API design
-- Test suite development
-- Documentation generation
-- Security hardening review
-
-**Human oversight:** All AI-generated code was reviewed, tested, and verified by the team. Final architectural decisions and security policies were human-approved.
+**Nandini Saini** & **Himesh Rupchandani**
+- Role: Design & documentation
 
 ### Technologies
 
