@@ -2,14 +2,14 @@
 tools/context.py
 -----------------
 Shared runtime context passed into every tool call: the live GraphStore, the
-risk scorer, and small pieces of mutable session state (e.g. ID counters for
-newly created Case / WatchlistEntry nodes).
+risk scorer, evidence trail, feature cache, and helpers for collision-resistant
+IDs for graph-backed Case / WatchlistEntry nodes.
 """
 from __future__ import annotations
 
-import itertools
-import time
+import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from graph.queries import GraphStore
 from models.features import GraphFeatureCache
@@ -21,8 +21,8 @@ class ToolContext:
     graph_store: GraphStore
     risk_scorer: RiskScorer
     evidence_trail: list = field(default_factory=list)
-    _case_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
-    _watch_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    action_audit: dict[str, Any] = field(default_factory=dict)
+    action_verdict: dict[str, Any] | None = None
     _feature_cache: GraphFeatureCache | None = None
 
     def feature_cache(self) -> GraphFeatureCache:
@@ -34,7 +34,9 @@ class ToolContext:
         self._feature_cache = None
 
     def new_case_id(self) -> str:
-        return f"CASE-{int(time.time()) % 100000}-{next(self._case_counter)}"
+        """Return a process-independent, collision-resistant graph case ID."""
+        return f"CASE-{uuid.uuid4().hex.upper()}"
 
     def new_watchlist_id(self) -> str:
-        return f"WL-{int(time.time()) % 100000}-{next(self._watch_counter)}"
+        """Return a process-independent, collision-resistant watchlist ID."""
+        return f"WL-{uuid.uuid4().hex.upper()}"
