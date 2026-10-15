@@ -125,20 +125,21 @@ export RINGTRACE_EVENTDAY_ENABLED=1
 export RINGTRACE_EVENTDAY_DISPOSABLE=1
 export RINGTRACE_EVENTDAY_FALKORDB_HOST=127.0.0.1
 export RINGTRACE_EVENTDAY_FALKORDB_PORT=6380
-export RINGTRACE_EVENTDAY_GRAPH=ringtrace_eventday_local
+export RINGTRACE_EVENTDAY_GRAPH=ringtrace_eventday_test
 
 # Keep the pre-existing graph routes from attempting a default localhost:6379 probe.
 export FALKORDB_HOST=127.0.0.1
 export FALKORDB_PORT=1
 
-# Add credentials only for trying the simulated write gate; do not commit them.
-export RINGTRACE_AUTH_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export RINGTRACE_DEMO_USERNAME="reviewer"
-export RINGTRACE_DEMO_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
-printf 'Temporary local analyst password: %s\n' "$RINGTRACE_DEMO_PASSWORD"
+# For the simulated write gate, load RINGTRACE_AUTH_SECRET,
+# RINGTRACE_DEMO_USERNAME, and RINGTRACE_DEMO_PASSWORD via an approved
+# local secret manager/runtime environment. Never echo or commit their values.
 
-# Load only the deterministic synthetic fixture; the loader is additive/idempotent.
-python -m eventday.seed
+# First perform the gated read-only endpoint/empty-graph preflight; the
+# integration module seeds the fixture only after both graph counts are zero.
+export RINGTRACE_TEST_DISPOSABLE=1
+pytest -q tests/eventday/test_graph_integration.py
+unset RINGTRACE_TEST_DISPOSABLE
 
 # Terminal 1, repository root:
 uvicorn api.main:app --host 0.0.0.0 --port 8000
@@ -149,7 +150,15 @@ cd frontend && npm run dev -- --host 0.0.0.0
 
 Open the Vite URL and select **Payment corridor**. The Vite `/api` proxy uses the backend on the same sandbox host. For a single-origin local build, `npm run build` makes FastAPI serve `frontend/dist`; visit `http://localhost:8000/corridor`.
 
-The default event-day feature is **disabled**. Its graph client uses only `RINGTRACE_EVENTDAY_FALKORDB_*` settings, defaulting to loopback port 6380; it does not inherit the pre-existing graph endpoint. Before opening a client, it refuses port 6379, non-loopback hosts, and graph names outside `ringtrace_eventday` (or its underscore-suffixed namespace). Seeding additionally requires `RINGTRACE_EVENTDAY_DISPOSABLE=1` and a loopback host. Never set the disposable flag against data you need to preserve.
+The default event-day feature is **disabled**. Its graph client uses only `RINGTRACE_EVENTDAY_FALKORDB_*` settings and never inherits the pre-existing graph endpoint. It refuses port 6379 and graph names outside `ringtrace_eventday` (or its underscore-suffixed namespace). Every connection requires an explicitly configured host and port, so no missing endpoint can fall back to localhost. Remote hosts additionally require TLS, username/password, and the exact `ringtrace_eventday_test` graph. Seeding requires `RINGTRACE_EVENTDAY_DISPOSABLE=1`; remote seeding is limited to the same TLS-authenticated test graph. Never set the disposable flag against data you need to preserve.
+
+### Dedicated Cloud test endpoint
+
+**Free-tier TLS limitation (checked 2026-10-15):** FalkorDB Cloud's [Free-tier matrix](https://github.com/FalkorDB/falkordb-cloud-docs/blob/0d1e2a2e7dc3dc11058de59fc9fab0757813c893/tiers/free.mdx) marks TLS unavailable on Free and first available on Startup. The [connection guide](https://github.com/FalkorDB/falkordb-cloud-docs/blob/0d1e2a2e7dc3dc11058de59fc9fab0757813c893/console/connect.mdx) says Free instances use the non-TLS client mode. This application deliberately refuses remote plaintext. Therefore, do not use a Free-tier instance for direct remote integration; do not set TLS off or relax certificate/hostname verification. The minimum provider capability is an endpoint with provider-supported TLS; the current plan matrix places that at Startup. No plan change or billable resource is made by this project.
+
+Store the Cloud host, assigned non-6379 port, username, and password only in the approved runtime secret/environment configuration; do not paste credentials in chat, save them in `.env.example`, or use a credential URL. Configure these existing connection variables in that runtime: `RINGTRACE_EVENTDAY_FALKORDB_HOST`, `RINGTRACE_EVENTDAY_FALKORDB_PORT`, `RINGTRACE_EVENTDAY_FALKORDB_USERNAME`, and `RINGTRACE_EVENTDAY_FALKORDB_PASSWORD`. Set `RINGTRACE_EVENTDAY_FALKORDB_TLS=1`, `RINGTRACE_EVENTDAY_GRAPH=ringtrace_eventday_test`, `RINGTRACE_EVENTDAY_ENABLED=1`, and `RINGTRACE_EVENTDAY_DISPOSABLE=1`; set `RINGTRACE_TEST_DISPOSABLE=1` only when explicitly running the integration test. Set legacy `FALKORDB_PORT=1` during test runs so the pre-existing graph test harness cannot target its default preview port. Missing host/port is a configuration error in every mode, not a localhost fallback. The client keeps TLS certificate and hostname verification enabled for Cloud connections.
+
+The integration test performs a read-only `RETURN 1` check and checks total graph node/edge counts before seeding. It refuses to seed if the target is not empty and never resets or wipes the graph. Run the integration module once against the newly created empty graph; after it seeds, inspect graph state rather than rerunning it blindly. The loader is additive/idempotent, but the test intentionally requires a fresh empty target for its first-run proof.
 
 Stop the disposable graph with `docker stop ringtrace-eventday-falkordb` (the `--rm` container is removed when stopped). Do not run the integration tests against the existing preview, a shared database, or a production graph.
 
@@ -169,7 +178,7 @@ RINGTRACE_EVENTDAY_GRAPH=ringtrace_eventday_test \
 pytest -q tests/eventday/test_graph_integration.py
 ```
 
-Current status: source/test drafts exist, but no disposable FalkorDB was started; graph integration, the browser UI, Docker build, action write-back, and demo recording remain unverified. Historical pre-event test counts do not verify this contribution.
+Current verification (2026-10-15): `falkordb-bin` 1.4.1 ran Redis 8.2.3 with FalkorDB 4.16.3 in a temporary Python 3.11 environment, bound to loopback port 6380; the temporary database and environment were removed after testing. The basic PING/Cypher smoke check passed (2 nodes, 1 edge). Actual local embedded event-day integration: **6 passed, 0 skipped**; seed-time fixture counts were **19 nodes / 31 edges**. After the authenticated simulated write, a read-only inspection observed **28 nodes / 41 edges** (5 payment events, 8 wallets, 1 investigation run, 1 proposal, 7 evidence nodes). Full Python suite: **99 passed, 36 skipped**; the six event-day integration cases were run separately against the local engine, not counted as full-suite passes. Frontend production build passed. The local graph API smoke, query-failure distinction, timestamp mutation/restore, approval, confirmation, replay rejection, and evidence write-back were exercised by that integration run. Remote Cloud TLS and production deployment remain unverified; browser QA and Docker build remain unrun. Port 6379 was not accessed.
 
 ## Three-minute demo outline
 

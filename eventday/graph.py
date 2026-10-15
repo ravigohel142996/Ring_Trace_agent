@@ -44,10 +44,10 @@ class QueryObservation:
 
 
 _graph_lock = threading.RLock()
-_graph_cache: dict[tuple[str, int, str, str | None, str | None], Any] = {}
+_graph_cache: dict[tuple[str, int, str, str | None, str | None, bool], Any] = {}
 
 
-def graph_settings() -> tuple[str, int, str, str | None, str | None]:
+def graph_settings() -> tuple[str, int, str, str | None, str | None, bool]:
     # This feature has its own connection settings; it must not silently reuse
     # the pre-existing RingTrace graph endpoint or the preview's graph config.
     host = os.getenv("RINGTRACE_EVENTDAY_FALKORDB_HOST", "127.0.0.1")
@@ -55,22 +55,36 @@ def graph_settings() -> tuple[str, int, str, str | None, str | None]:
     graph_name = os.getenv("RINGTRACE_EVENTDAY_GRAPH", DEFAULT_GRAPH_NAME)
     username = os.getenv("RINGTRACE_EVENTDAY_FALKORDB_USERNAME") or None
     password = os.getenv("RINGTRACE_EVENTDAY_FALKORDB_PASSWORD") or None
-    return host, port, graph_name, username, password
+    tls_value = os.getenv("RINGTRACE_EVENTDAY_FALKORDB_TLS", "0").strip()
+    if tls_value not in {"0", "1"}:
+        raise ValueError("RINGTRACE_EVENTDAY_FALKORDB_TLS must be 0 or 1.")
+    tls = tls_value == "1"
+    return host, port, graph_name, username, password, tls
 
 
 def get_event_graph():
-    """Return a cached handle, refusing legacy/live endpoint conventions."""
+    """Return the event-day graph handle with explicit, verified transport policy."""
     settings = graph_settings()
-    host, port, graph_name, _, _ = settings
+    host, port, graph_name, username, password, tls = settings
     if port == 6379:
         raise RuntimeError("Event-day graph access refuses port 6379; use a dedicated non-6379 endpoint.")
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeError("Event-day graph access is restricted to loopback; remote/shared targets are refused.")
     if graph_name != DEFAULT_GRAPH_NAME and not graph_name.startswith(f"{DEFAULT_GRAPH_NAME}_"):
         raise RuntimeError(f"Event-day graph name must be '{DEFAULT_GRAPH_NAME}' or use its underscore prefix.")
+    if (not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_HOST")
+            or not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_PORT")):
+        raise RuntimeError("Event-day access requires an explicitly configured event-day host and port; refusing localhost defaults.")
+
+    loopback = host in {"127.0.0.1", "localhost", "::1"}
+    if not loopback:
+        if not tls:
+            raise RuntimeError("Remote event-day endpoints require TLS; refusing an unencrypted connection.")
+        if not username or not password:
+            raise RuntimeError("Remote event-day endpoints require configured username and password.")
+        if graph_name != "ringtrace_eventday_test":
+            raise RuntimeError("Remote event-day access is restricted to graph 'ringtrace_eventday_test'.")
+
     with _graph_lock:
         if settings not in _graph_cache:
-            host, port, graph_name, username, password = settings
             options: dict[str, Any] = {
                 "host": host,
                 "port": port,
@@ -81,6 +95,11 @@ def get_event_graph():
                 options["username"] = username
             if password:
                 options["password"] = password
+            if tls:
+                # FalkorDB delegates these supported options to redis-py. Keep
+                # certificate and hostname verification enabled for Cloud.
+                options["ssl"] = True
+                options["ssl_check_hostname"] = True
             _graph_cache[settings] = FalkorDB(**options).select_graph(graph_name)
         return _graph_cache[settings]
 

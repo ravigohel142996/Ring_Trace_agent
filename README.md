@@ -893,8 +893,9 @@ The query text, parameters, errors, and returned rows are exposed in the UI.
 ### Local disposable setup and tests
 
 The event-day API is disabled by default and uses a dedicated connection
-(`RINGTRACE_EVENTDAY_FALKORDB_HOST/PORT`, default loopback port 6380); it does
-not inherit the pre-existing RingTrace graph endpoint. After verifying that
+with explicitly configured `RINGTRACE_EVENTDAY_FALKORDB_HOST/PORT` (the local
+example uses loopback port 6380); it does not inherit the pre-existing graph
+endpoint. After verifying that
 port 6380 is free and suitable for a throwaway service, local setup is:
 
 ```bash
@@ -903,16 +904,20 @@ docker run --rm -d --name ringtrace-eventday-falkordb \
   -p 127.0.0.1:6380:6379 falkordb/falkordb:latest
 export RINGTRACE_EVENTDAY_ENABLED=1 RINGTRACE_EVENTDAY_DISPOSABLE=1
 export RINGTRACE_EVENTDAY_FALKORDB_HOST=127.0.0.1 RINGTRACE_EVENTDAY_FALKORDB_PORT=6380
-export RINGTRACE_EVENTDAY_GRAPH=ringtrace_eventday_local
+export RINGTRACE_EVENTDAY_GRAPH=ringtrace_eventday_test
 export FALKORDB_HOST=127.0.0.1 FALKORDB_PORT=1  # isolate legacy preview graph checks
-python -m eventday.seed
+export RINGTRACE_TEST_DISPOSABLE=1
+pytest -q tests/eventday/test_graph_integration.py  # read-only empty check, then synthetic seed/tests
+unset RINGTRACE_TEST_DISPOSABLE
 uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-The event-day graph client refuses port 6379, non-loopback hosts, and graph
-names outside the `ringtrace_eventday` namespace before constructing a
-FalkorDB client. Seeding additionally requires the enabled/disposable opt-in.
-Full install/auth details and the separately gated integration test invocation are in
+The event-day graph client refuses port 6379 and graph names outside the
+`ringtrace_eventday` namespace before constructing a FalkorDB client. Remote
+Cloud hosts are accepted only with explicit TLS, username/password, and the
+exact `ringtrace_eventday_test` graph. Every connection requires explicit
+host/port and never falls back to localhost. Seeding additionally requires the enabled and
+disposable opt-ins. Full connection details are in
 [`docs/EVENTDAY_TRACK_01.md`](docs/EVENTDAY_TRACK_01.md).
 
 Fast unit tests cover planner semantics, parameterized Cypher/hop validation,

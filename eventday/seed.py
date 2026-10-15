@@ -50,13 +50,19 @@ def seed_eventday_graph() -> dict[str, int | str]:
         raise RuntimeError("Refusing to seed while RINGTRACE_EVENTDAY_ENABLED is not 1.")
     if os.getenv("RINGTRACE_EVENTDAY_DISPOSABLE") != "1":
         raise RuntimeError("Refusing to seed without RINGTRACE_EVENTDAY_DISPOSABLE=1.")
-    host, port, graph_name, _, _ = graph_settings()
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeError("Refusing to seed a non-loopback FalkorDB host; use a local disposable instance.")
+    host, port, graph_name, username, password, tls = graph_settings()
+    if (not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_HOST")
+            or not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_PORT")):
+        raise RuntimeError("Refusing to seed without an explicitly configured event-day host and port.")
     if port == 6379:
-        raise RuntimeError("Refusing to seed port 6379; choose a disposable FalkorDB port such as 6380.")
+        raise RuntimeError("Refusing to seed port 6379; choose a dedicated non-6379 endpoint.")
     if graph_name != "ringtrace_eventday" and not graph_name.startswith("ringtrace_eventday_"):
         raise RuntimeError("Refusing to seed a graph outside the 'ringtrace_eventday' underscore prefix.")
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        if not tls or not username or not password:
+            raise RuntimeError("Refusing remote seed without TLS and configured username/password.")
+        if graph_name != "ringtrace_eventday_test":
+            raise RuntimeError("Remote seeding is restricted to graph 'ringtrace_eventday_test'.")
 
     dataset_id = os.getenv("RINGTRACE_EVENTDAY_DATASET", DEFAULT_DATASET_ID)
     data = fixture()

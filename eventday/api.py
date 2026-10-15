@@ -156,7 +156,7 @@ cases = CorridorCaseStore()
 
 @router.get("/health")
 def corridor_graph_health() -> dict[str, Any]:
-    host, port, graph_name, _, _ = graph_settings()
+    host, port, graph_name, _, _, _ = graph_settings()
     if os.getenv("RINGTRACE_EVENTDAY_ENABLED") != "1":
         return {"enabled": False, "connected": False, "host": host, "port": port,
                 "graph": graph_name, "error": "Event-day graph is disabled."}
