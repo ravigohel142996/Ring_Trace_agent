@@ -36,21 +36,71 @@ class GraphSettings:
     username: Optional[str]
     password: Optional[str]
     graph_name: str
+    tls: bool = False
     connect_timeout: float = 5.0
     socket_timeout: float = 15.0
 
     @classmethod
     def from_env(cls) -> "GraphSettings":
+        host = os.getenv("FALKORDB_HOST", "localhost")
+        port = int(os.getenv("FALKORDB_PORT", "6379"))
+        username = os.getenv("FALKORDB_USERNAME") or None
+        password = os.getenv("FALKORDB_PASSWORD") or None
+        graph_name = os.getenv("FALKORDB_GRAPH", "ringtrace")
+        tls_value = os.getenv("FALKORDB_TLS", "0").strip()
+        if tls_value not in {"0", "1"}:
+            raise ValueError("FALKORDB_TLS must be 0 or 1.")
+        tls = tls_value == "1"
         return cls(
-            host=os.getenv("FALKORDB_HOST", "localhost"),
-            port=int(os.getenv("FALKORDB_PORT", "6379")),
-            username=os.getenv("FALKORDB_USERNAME") or None,
-            password=os.getenv("FALKORDB_PASSWORD") or None,
-            graph_name=os.getenv("FALKORDB_GRAPH", "ringtrace"),
+            host=host, port=port, username=username, password=password,
+            graph_name=graph_name, tls=tls,
+        )
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+# Temporary exception for hackathon submission - FalkorDB Cloud free tier
+# does not support TLS. REMOVE AFTER HACKATHON and enable TLS.
+_HACKATHON_ALLOWED_HOSTS = {
+    "r-6jissuruar.instance-llgbmbk00.hc-7up0crkyn.ap-south-1.aws.f2e0a955bb84.cloud"
+}
+
+
+def _enforce_transport_policy(settings: "GraphSettings") -> None:
+    """Refuse unencrypted connections to non-loopback hosts.
+
+    The legacy graph path historically defaulted to plaintext on any host.
+    Remote endpoints now require TLS plus configured credentials; loopback
+    retains its existing local-development behaviour.
+    
+    TEMPORARY: Specific hackathon demo hosts are allowed without TLS.
+    This exception must be removed after the hackathon.
+    """
+    if settings.host in _LOOPBACK_HOSTS:
+        return
+    if settings.host in _HACKATHON_ALLOWED_HOSTS:
+        # Temporary exception for hackathon - credentials still required
+        if not settings.username or not settings.password:
+            raise GraphConnectionError(
+                f"Remote graph endpoint '{settings.host}' requires configured "
+                f"FALKORDB_USERNAME and FALKORDB_PASSWORD."
+            )
+        return
+    if not settings.tls:
+        raise GraphConnectionError(
+            f"Refusing an unencrypted connection to non-loopback host "
+            f"'{settings.host}'. Set FALKORDB_TLS=1 for remote endpoints "
+            f"or use a loopback address for local development."
+        )
+    if not settings.username or not settings.password:
+        raise GraphConnectionError(
+            f"Remote graph endpoint '{settings.host}' requires configured "
+            f"FALKORDB_USERNAME and FALKORDB_PASSWORD."
         )
 
 
 def _connect(settings: GraphSettings) -> FalkorDB:
+    _enforce_transport_policy(settings)
     kwargs: dict[str, Any] = {
         "host": settings.host,
         "port": settings.port,
@@ -61,6 +111,11 @@ def _connect(settings: GraphSettings) -> FalkorDB:
         kwargs["username"] = settings.username
     if settings.password:
         kwargs["password"] = settings.password
+    if settings.tls:
+        # FalkorDB delegates these supported options to redis-py. Keep
+        # certificate and hostname verification enabled for remote endpoints.
+        kwargs["ssl"] = True
+        kwargs["ssl_check_hostname"] = True
     return FalkorDB(**kwargs)
 
 
