@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from './api/client';
 import AppShell from './components/AppShell';
 import CasesPage from './pages/CasesPage';
+import CorridorPage from './pages/CorridorPage';
 import GraphPage from './pages/GraphPage';
 import InvestigatePage from './pages/InvestigatePage';
 import RiskPage from './pages/RiskPage';
 import type { AnalystSession, CaseRecord, GraphHealth, PageKey, Scenario } from './types';
 
 function pageFromPath(path: string): PageKey {
+  if (path.startsWith('/corridor')) return 'corridor';
   if (path.startsWith('/cases')) return 'cases';
   if (path.startsWith('/risk')) return 'risk';
   if (path.startsWith('/graph')) return 'graph';
@@ -159,6 +161,13 @@ export default function App() {
           onDismissError={() => setError('')}
           onViewCases={() => navigate('cases')}
           onUpdateCase={updateCase}
+        />
+      )}
+      {page === 'corridor' && (
+        <CorridorPage
+          authSession={authSession}
+          authLoading={authLoading}
+          onAuthExpired={() => { void refreshAuth(); }}
         />
       )}
       {page === 'cases' && <CasesPage cases={cases} onSelect={selectCase} onInvestigate={() => navigate('investigate')} />}

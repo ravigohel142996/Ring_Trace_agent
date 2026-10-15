@@ -1,4 +1,4 @@
-import type { AnalystSession, CaseRecord, GraphExport, GraphHealth, Scenario } from '../types';
+import type { AnalystSession, CaseRecord, CorridorGraphHealth, CorridorInvestigation, CorridorScenario, GraphExport, GraphHealth, Scenario } from '../types';
 
 export class ApiError extends Error {
   status: number;
@@ -64,4 +64,24 @@ export const api = {
     body: JSON.stringify({ confirmed }),
     cache: 'no-store',
   }),
+  corridorHealth: () => request<CorridorGraphHealth>('/api/eventday/health'),
+  corridorScenarios: () => request<{ dataset_id: string; scenarios: CorridorScenario[] }>('/api/eventday/scenarios'),
+  investigateCorridor: (payment_event_id: string, window_minutes: number, max_hops: number) =>
+    request<{ case_id: string; status: string; investigation: CorridorInvestigation }>('/api/eventday/investigations', {
+      method: 'POST',
+      body: JSON.stringify({ payment_event_id, window_minutes, max_hops }),
+    }),
+  approveCorridor: (caseId: string, csrfToken: string) => request<Record<string, unknown>>(
+    `/api/eventday/investigations/${encodeURIComponent(caseId)}/approve`, {
+      method: 'POST',
+      headers: csrfHeaders(csrfToken),
+      cache: 'no-store',
+    }),
+  executeCorridor: (caseId: string, confirmed: boolean, csrfToken: string) => request<Record<string, unknown>>(
+    `/api/eventday/investigations/${encodeURIComponent(caseId)}/execute`, {
+      method: 'POST',
+      headers: csrfHeaders(csrfToken),
+      body: JSON.stringify({ confirmed }),
+      cache: 'no-store',
+    }),
 };

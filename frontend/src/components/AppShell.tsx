@@ -18,6 +18,7 @@ interface AppShellProps {
 
 const navItems: { key: PageKey; label: string; icon: Parameters<typeof Icon>[0]['name'] }[] = [
   { key: 'investigate', label: 'Investigate', icon: 'investigate' },
+  { key: 'corridor', label: 'Payment corridor', icon: 'graph' },
   { key: 'cases', label: 'Case files', icon: 'cases' },
   { key: 'risk', label: 'Risk signals', icon: 'risk' },
   { key: 'graph', label: 'Graph explorer', icon: 'graph' },

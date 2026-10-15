@@ -49,8 +49,8 @@ export default function AuthControl({ session, loading, statusError, onLogin, on
 
   if (loading) return <span className="auth-state-label">CHECKING SESSION…</span>;
   if (!session.auth_enabled) {
-    return <span className="auth-state-label auth-state-locked" title={statusError || 'Configure the demo analyst credentials and signing secret to enable action routes.'}>
-      ACTIONS LOCKED · AUTH NOT CONFIGURED
+    return <span className="auth-state-label auth-state-locked" title={statusError || 'Actions fail closed until RINGTRACE_AUTH_SECRET (32+ bytes), RINGTRACE_DEMO_USERNAME, and RINGTRACE_DEMO_PASSWORD are configured and the API is restarted. The event-day graph must also be enabled and connected before any simulated graph write can run.'}>
+      ACTIONS LOCKED · DEMO AUTH OFF
     </span>;
   }
 

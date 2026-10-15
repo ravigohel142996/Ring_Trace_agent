@@ -109,3 +109,31 @@ original Streamlit application and fraud-investigation engine.
   tests.
 - `docker/`, `docker-compose.yml`: one-port FastAPI deployment with an
   internal graph service.
+
+## Event-day extension status — 2026-10-15
+
+The pre-event status above remains a record of the earlier baseline; it does
+not verify the new contribution. The separate proposed Track 01 workflow lives
+under `eventday/` and in the Payment corridor UI. It uses its own disabled-by-
+default FalkorDB connection (`RINGTRACE_EVENTDAY_FALKORDB_*`), a synthetic-only
+schema, a strictly time-respecting Cypher traversal, identity follow-ups, and
+conditional FalkorDB PageRank/WCC. A graph write can only create a simulated
+review proposal/provenance after analyst authentication, short-lived approval,
+and explicit confirmation.
+
+Current verification (2026-10-15): `npm run build` passed (`tsc --noEmit`
+plus Vite production build). The full Python suite passed **92, skipped 32,
+failed 0** using `FALKORDB_PORT=1`, `RINGTRACE_TEST_DISPOSABLE=0`, and
+`RINGTRACE_EVENTDAY_ENABLED=0`; the focused event-day suite passed **19,
+skipped 2, failed 0**. Both gated event-day graph integration tests skipped,
+and graph-dependent legacy tests were disabled; the graph integration status
+is **UNVERIFIED (no disposable FalkorDB)**. A no-graph HTTP smoke test served
+`/corridor`, synthetic scenario IDs, and a disabled event-day health response;
+the investigation route correctly returned 503 before opening a graph
+connection. Docker, Podman, `redis-server`, and `redis-cli` are not installed
+in this workspace. No FalkorDB process was started or contacted, and port 6379
+was not probed or accessed. Do not infer graph/browser/Docker integration or
+action-write verification from the build, unit tests, or HTTP smoke test. The
+demo video, organizer eligibility clarification, full-history secret/license
+reviews, and public-release decision remain outstanding. See
+`docs/EVENTDAY_TRACK_01.md`.

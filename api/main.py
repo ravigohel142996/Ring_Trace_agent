@@ -50,6 +50,7 @@ from graph.connection import get_graph, health_check
 from graph.queries import GraphStore
 from models.risk_scorer import RiskScorer
 from tools.context import ToolContext
+from eventday.api import router as eventday_router
 
 logger = logging.getLogger("ringtrace.api")
 app = FastAPI(
@@ -59,6 +60,7 @@ app = FastAPI(
 )
 app.state.investigations = InvestigationStore()
 app.state.auth_sessions = AuthSessionRegistry()
+app.include_router(eventday_router)
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
 
