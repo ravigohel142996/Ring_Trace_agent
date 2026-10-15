@@ -137,3 +137,40 @@ action-write verification from the build, unit tests, or HTTP smoke test. The
 demo video, organizer eligibility clarification, full-history secret/license
 reviews, and public-release decision remain outstanding. See
 `docs/EVENTDAY_TRACK_01.md`.
+
+## Security hardening — 2026-10-15 (current session)
+
+**Legacy graph transport policy:** `graph/connection.py` now enforces a
+fail-closed remote transport policy. Non-loopback hosts require `FALKORDB_TLS=1`
+plus configured `FALKORDB_USERNAME` and `FALKORDB_PASSWORD`; loopback retains
+its existing local-development behavior. The transport policy is checked
+before any connection attempt, so unsafe configurations fail with an actionable
+error rather than silently connecting in plaintext. This aligns the legacy
+path with the event-day graph's existing security model in `eventday/graph.py`.
+
+**Docker port exposure:** `docker-compose.yml` now binds the published app
+port to `127.0.0.1:8000:8000` instead of `8000:8000`, so the demo app is not
+exposed to the network by default. The FalkorDB service remains internal to
+the Compose network and is not published to the host.
+
+**Offline test coverage:** `tests/test_legacy_transport_policy.py` verifies
+the transport policy without any network access, database, or subprocess.
+The tests check that loopback plaintext is permitted, remote plaintext is
+refused, remote TLS without credentials is refused, and remote TLS with
+credentials is permitted. These tests cannot be executed in the current
+workspace because Python dependencies are not installed; they are ready for
+execution in an environment with `pytest` and `falkordb` available.
+
+**Secrets audit:** No hardcoded credentials, tokens, or secrets were found
+in tracked files. `.env` and `.env.*` (except `.env.example`) are properly
+ignored in both `.gitignore` and `.dockerignore`. `.env.example` uses
+placeholders only. Authentication uses signed cookies, CSRF tokens, and
+constant-time comparison. Action routes require authentication, approval,
+explicit confirmation, and replay protection.
+
+**Remaining security considerations:** The historical `169.254.0.21:6380`
+listener remains unresolved and must be investigated by the sandbox operator
+before any graph integration tests are run. The legacy graph path now refuses
+remote plaintext, but the actual TLS certificate verification and secure
+connection behavior depend on the underlying `redis-py` library capabilities
+and have not been independently verified in this session.

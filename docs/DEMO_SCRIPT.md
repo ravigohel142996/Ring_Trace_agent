@@ -124,6 +124,42 @@ money. Expose the ring.”
 
 ---
 
+## 7. Event-day payment corridor (optional, 60–90s)
+
+If the event-day disposable graph is configured and verified, switch to the
+**Payment corridor** page. Select `PAY-ALERT-1001` and explain:
+
+> "This is a separate event-day workflow. The anchor payment occurred at a
+> specific time. The agent queries FalkorDB for downstream payments that
+> happened strictly later, within a bounded window and hop count. The
+> returned path W-MULE-01 → W-MULE-02 → W-MULE-03 reaches a synthetic
+> payout destination. Shared-device and shared-owner evidence corroborates
+> the corridor. FalkorDB PageRank ranks the corridor wallets. All of these
+> are graph-derived signals, not fraud findings."
+
+Show the Cypher, parameters, and returned rows. If time permits, contrast
+with `PAY-BENIGN-2001` (household transfer, no corridor) or `PAY-AMBIG-3001`
+(shared device without money movement).
+
+If the authenticated write is enabled, demonstrate the approval and
+confirmation gate:
+
+> "The recommendation cannot execute silently. An analyst authenticates,
+> approves the time-limited proposal, and confirms a second time. The only
+> write is a simulated review proposal and its provenance in the synthetic
+> graph. No payment is frozen, sent, or otherwise changed."
+
+Close with:
+
+> "RingTrace uses FalkorDB as the live graph context layer for two distinct
+> workflows: the pre-existing account-ring investigator and the event-day
+> time-respecting payment-corridor investigator. Both read actual graph
+> evidence, adapt follow-up queries to returned rows, and require human
+> approval before any simulated action. Follow the graph. Trace the money.
+> Respect the clock."
+
+---
+
 ## Before presenting
 
 - Ensure `/api/graph/health` reports `connected: true` and the graph has the
@@ -133,3 +169,7 @@ money. Expose the ring.”
   before a fresh run if a clean action ledger is desired.
 - Do not describe synthetic A1027 records as real customer data or a real
   fraud finding.
+- The event-day corridor requires a separate disposable FalkorDB instance on
+  port 6380 with `RINGTRACE_EVENTDAY_ENABLED=1`. If unavailable, skip section 7
+  and state that the event-day integration tests have not been run in this
+  environment.
