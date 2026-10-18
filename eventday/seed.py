@@ -58,11 +58,24 @@ def seed_eventday_graph() -> dict[str, int | str]:
         raise RuntimeError("Refusing to seed port 6379; choose a dedicated non-6379 endpoint.")
     if graph_name != "ringtrace_eventday" and not graph_name.startswith("ringtrace_eventday_"):
         raise RuntimeError("Refusing to seed a graph outside the 'ringtrace_eventday' underscore prefix.")
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        if not tls or not username or not password:
-            raise RuntimeError("Refusing remote seed without TLS and configured username/password.")
+    loopback = host in {"127.0.0.1", "localhost", "::1"}
+    railway_private = host.lower().rstrip(".").endswith(".railway.internal")
+
+    if not loopback:
+        # Railway private-network traffic is encrypted by Railway's private
+        # WireGuard network. Other remote endpoints must use TLS.
+        if not railway_private and not tls:
+            raise RuntimeError(
+                "Refusing remote seed without TLS and configured username/password."
+            )
+        if not username or not password:
+            raise RuntimeError(
+                "Refusing remote seed without TLS and configured username/password."
+            )
         if graph_name != "ringtrace_eventday_test":
-            raise RuntimeError("Remote seeding is restricted to graph 'ringtrace_eventday_test'.")
+            raise RuntimeError(
+                "Remote seeding is restricted to graph 'ringtrace_eventday_test'."
+            )
 
     dataset_id = os.getenv("RINGTRACE_EVENTDAY_DATASET", DEFAULT_DATASET_ID)
     data = fixture()
