@@ -63,25 +63,53 @@ def graph_settings() -> tuple[str, int, str, str | None, str | None, bool]:
 
 
 def get_event_graph():
-    """Return the event-day graph handle with explicit, verified transport policy."""
+    """Return the event-day graph handle with explicit transport policy."""
     settings = graph_settings()
     host, port, graph_name, username, password, tls = settings
+
     if port == 6379:
-        raise RuntimeError("Event-day graph access refuses port 6379; use a dedicated non-6379 endpoint.")
-    if graph_name != DEFAULT_GRAPH_NAME and not graph_name.startswith(f"{DEFAULT_GRAPH_NAME}_"):
-        raise RuntimeError(f"Event-day graph name must be '{DEFAULT_GRAPH_NAME}' or use its underscore prefix.")
-    if (not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_HOST")
-            or not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_PORT")):
-        raise RuntimeError("Event-day access requires an explicitly configured event-day host and port; refusing localhost defaults.")
+        raise RuntimeError(
+            "Event-day graph access refuses port 6379; "
+            "use a dedicated non-6379 endpoint."
+        )
+
+    if graph_name != DEFAULT_GRAPH_NAME and not graph_name.startswith(
+        f"{DEFAULT_GRAPH_NAME}_"
+    ):
+        raise RuntimeError(
+            f"Event-day graph name must be '{DEFAULT_GRAPH_NAME}' "
+            "or use its underscore prefix."
+        )
+
+    if (
+        not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_HOST")
+        or not os.getenv("RINGTRACE_EVENTDAY_FALKORDB_PORT")
+    ):
+        raise RuntimeError(
+            "Event-day access requires an explicitly configured "
+            "event-day host and port; refusing localhost defaults."
+        )
 
     loopback = host in {"127.0.0.1", "localhost", "::1"}
+    railway_private = host.lower().rstrip(".").endswith(".railway.internal")
+
     if not loopback:
-        if not tls:
-            raise RuntimeError("Remote event-day endpoints require TLS; refusing an unencrypted connection.")
+        if not railway_private and not tls:
+            raise RuntimeError(
+                "Remote event-day endpoints require TLS; "
+                "refusing an unencrypted connection."
+            )
+
         if not username or not password:
-            raise RuntimeError("Remote event-day endpoints require configured username and password.")
+            raise RuntimeError(
+                "Remote event-day endpoints require configured username and password."
+            )
+
         if graph_name != "ringtrace_eventday_test":
-            raise RuntimeError("Remote event-day access is restricted to graph 'ringtrace_eventday_test'.")
+            raise RuntimeError(
+                "Remote event-day access is restricted to graph "
+                "'ringtrace_eventday_test'."
+            )
 
     with _graph_lock:
         if settings not in _graph_cache:
@@ -91,18 +119,19 @@ def get_event_graph():
                 "socket_connect_timeout": 2,
                 "socket_timeout": 8,
             }
+
             if username:
                 options["username"] = username
             if password:
                 options["password"] = password
+
             if tls:
-                # FalkorDB delegates these supported options to redis-py. Keep
-                # certificate and hostname verification enabled for Cloud.
                 options["ssl"] = True
                 options["ssl_check_hostname"] = True
-            _graph_cache[settings] = FalkorDB(**options).select_graph(graph_name)
-        return _graph_cache[settings]
 
+            _graph_cache[settings] = FalkorDB(**options).select_graph(graph_name)
+
+        return _graph_cache[settings]
 
 class CorridorGraph:
     """Typed Cypher surface for payment-event investigation.
